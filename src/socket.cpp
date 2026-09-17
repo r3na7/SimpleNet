@@ -12,7 +12,7 @@ snet::Socket::Socket(Socket &&other) noexcept : _fd(other._fd)
 snet::Socket &snet::Socket::operator=(Socket &&other) noexcept
 {
     _fd = other._fd;
-    other._fd = -1;    
+    other._fd = -1;
 }
 
 int snet::Socket::fd() const noexcept
@@ -22,7 +22,8 @@ int snet::Socket::fd() const noexcept
 
 snet::Socket::~Socket()
 {
-    if (_fd != -1) {
+    if (_fd != -1)
+    {
         close(_fd);
     }
 }
