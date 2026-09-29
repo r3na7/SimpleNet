@@ -21,6 +21,7 @@ public:
     void set_events(uint32_t events) noexcept;
     void add_event(uint32_t event) noexcept;
     void remove_event(uint32_t event) noexcept;
+    void clear_events() noexcept;
     void set_revents(uint32_t events) noexcept;
 
     void set_read_callback(std::function<void()> callback);

@@ -18,6 +18,8 @@ void snet::Channel::add_event(uint32_t event) noexcept { events_ |= event; }
 
 void snet::Channel::remove_event(uint32_t event) noexcept { events_ &= ~event; }
 
+void snet::Channel::clear_events() noexcept { events_ = 0; }
+
 void snet::Channel::set_revents(uint32_t revents) noexcept { revents_ = revents; }
 
 void snet::Channel::set_read_callback(std::function<void()> callback) { read_callback_ = std::move(callback); }
