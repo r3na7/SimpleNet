@@ -45,7 +45,7 @@ void snet::Poller::remove_channel(snet::Channel *channel)
         throw std::logic_error("fd belongs to another Channel");
     }
 
-    channel->stop_handling_current_event();
+    channel->stop_event_dispatch();
     channels_.erase(it);
 
     for (auto &active_channel : active_channels_) {

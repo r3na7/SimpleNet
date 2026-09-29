@@ -11,8 +11,8 @@ class Channel
 public:
     Channel(int fd);
 
-    Channel(const Channel&) = delete;
-    Channel(Channel&&) = delete;
+    Channel(const Channel &) = delete;
+    Channel(Channel &&) = delete;
 
     int get_fd() const noexcept;
     uint32_t get_events() const noexcept;
@@ -22,7 +22,6 @@ public:
     void add_event(uint32_t event) noexcept;
     void remove_event(uint32_t event) noexcept;
     void clear_events() noexcept;
-    void set_revents(uint32_t events) noexcept;
 
     void set_read_callback(std::function<void()> callback);
     void set_write_callback(std::function<void()> callback);
@@ -34,9 +33,12 @@ public:
     void handle_error();
     void handle_event();
 
-    void stop_handling_current_event() noexcept;
-
 private:
+    friend class Poller;
+
+    void stop_event_dispatch() noexcept;
+    void set_revents(uint32_t events) noexcept;
+
     int fd_ = -1;
 
     uint32_t events_ = 0;
