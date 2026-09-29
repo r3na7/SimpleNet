@@ -26,23 +26,9 @@ void snet::Channel::set_write_callback(std::function<void()> callback) { write_c
 
 void snet::Channel::set_error_callback(std::function<void()> callback) { error_callback_ = std::move(callback); }
 
-void snet::Channel::handle_read()
-{
-    if (read_callback_)
-        read_callback_();
-}
+void snet::Channel::stop_event_dispatch() noexcept { dispatch_cancelled_ = true; }
 
-void snet::Channel::handle_write()
-{
-    if (write_callback_)
-        write_callback_();
-}
-
-void snet::Channel::handle_error()
-{
-    if (error_callback_)
-        error_callback_();
-}
+void snet::Channel::set_revents(uint32_t revents) noexcept { revents_ = revents; }
 
 void snet::Channel::handle_event()
 {
@@ -68,6 +54,20 @@ void snet::Channel::handle_event()
     }
 }
 
-void snet::Channel::stop_event_dispatch() noexcept { dispatch_cancelled_ = true; }
+void snet::Channel::handle_read()
+{
+    if (read_callback_)
+        read_callback_();
+}
 
-void snet::Channel::set_revents(uint32_t revents) noexcept { revents_ = revents; }
+void snet::Channel::handle_write()
+{
+    if (write_callback_)
+        write_callback_();
+}
+
+void snet::Channel::handle_error()
+{
+    if (error_callback_)
+        error_callback_();
+}
