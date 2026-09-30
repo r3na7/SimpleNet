@@ -27,6 +27,8 @@ public:
     void set_write_callback(std::function<void()> callback);
     void set_error_callback(std::function<void()> callback);
 
+    void handle_event();
+
 private:
     friend class Poller;
     friend class EventLoop;
@@ -34,7 +36,6 @@ private:
     void stop_event_dispatch() noexcept;
     void set_revents(uint32_t events) noexcept;
 
-    void handle_event();
     void handle_read();
     void handle_write();
     void handle_error();
