@@ -88,6 +88,31 @@ An exception while preparing a batch in `Poller::poll()` has no such continuatio
 guarantee: there is no successfully prepared batch to resume. If the last channel
 throws, the saved batch is already exhausted and the next run proceeds to a new poll.
 
+## Configuring EventLoop
+
+Use `set_max_events(int)` and `get_max_events()` to configure and inspect the
+maximum events per wait (default: 1024). Use `set_timeout(int)` and `get_timeout()`
+for the wait timeout (default: -1, meaning an indefinite wait).
+
+```cpp
+snet::EventLoop loop;
+loop.set_max_events(64);
+loop.set_timeout(100); // Wait at most 100 milliseconds per poll.
+```
+
+All settings are accessed in the same thread as the loop. They may be changed
+before startup, from callbacks, or between runs. Batch capacity must be positive;
+invalid values throw `std::invalid_argument` before allocation. A failed capacity
+change preserves the previous setting. Changes affect subsequent waits and do
+not truncate the current batch or a batch saved after a callback exception.
+
+Timeout values are stored without validation. The supported contract is -1
+for an indefinite wait, 0 for an immediate check, and positive milliseconds for
+a bounded wait. Expiration does not invoke a timeout callback or return from
+`loop()`; the loop waits again. A zero timeout may cause busy polling and high
+CPU usage. Changing the timeout does not interrupt an ongoing wait and is not
+a mechanism for stopping the loop from another thread.
+
 ## Using Poller for a custom loop
 
 Poller does not invoke callbacks. Use the public

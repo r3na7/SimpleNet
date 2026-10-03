@@ -20,7 +20,8 @@ namespace snet
  *
  * Copying and moving are prohibited by Poller's restrictions. The implicit
  * constructor may throw exceptions from Poller::Poller(). The internal Poller
- * uses default settings; they cannot be changed through the EventLoop API.
+ * initially uses default settings; its batch capacity and timeout can be changed
+ * through this API in the same thread, including from callbacks or between runs.
  * @see docs/reactor.md
  */
 class EventLoop
@@ -48,6 +49,46 @@ public:
      * @see Poller::remove_channel()
      */
     void remove_channel(snet::Channel *ch);
+
+    /**
+     * @brief Changes the maximum number of events per wait.
+     * @param max_events Positive int batch capacity from 1 through INT_MAX, inclusive.
+     * @pre Called in the thread that uses this EventLoop.
+     * @throws std::invalid_argument The capacity is zero or negative.
+     * @throws std::bad_alloc Allocation failed while resizing the event buffer.
+     * @throws std::length_error The capacity exceeds the vector's limits.
+     * @note Applies to subsequent waits without changing the current or saved batch.
+     *       Does not limit channel registrations. Failure preserves the previous setting.
+     * @see Poller::set_max_events()
+     */
+    void set_max_events(int max_events);
+
+    /**
+     * @brief Returns the maximum number of events per wait.
+     * @return The stored batch capacity (1024 by default).
+     * @pre Called in the thread that uses this EventLoop.
+     */
+    int get_max_events() const noexcept;
+
+    /**
+     * @brief Changes the timeout for subsequent event waits.
+     * @param timeout Milliseconds: -1 waits indefinitely, 0 checks immediately,
+     *                and positive values specify a bounded wait.
+     * @pre Called in the thread that uses this EventLoop.
+     * @note The value is stored without validation; other negative values are
+     *       outside the contract. Does not interrupt an ongoing wait. Expiration
+     *       does not invoke a callback or return control from loop(); waiting repeats.
+     * @warning A zero timeout may cause loop() to busy-poll and consume CPU.
+     * @see Poller::set_timeout()
+     */
+    void set_timeout(int timeout) noexcept;
+
+    /**
+     * @brief Returns the event wait timeout.
+     * @return The stored timeout in milliseconds (initially -1).
+     * @pre Called in the thread that uses this EventLoop.
+     */
+    int get_timeout() const noexcept;
 
     /**
      * @brief Waits for events and calls Channel::handle_event() until stopped.

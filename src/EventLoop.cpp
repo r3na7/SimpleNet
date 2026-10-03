@@ -6,6 +6,14 @@ void snet::EventLoop::update_channel(snet::Channel *ch) { poller_.update_channel
 
 void snet::EventLoop::remove_channel(snet::Channel *ch) { poller_.remove_channel(ch); }
 
+void snet::EventLoop::set_max_events(int max_events) { poller_.set_max_events(max_events); }
+
+int snet::EventLoop::get_max_events() const noexcept { return poller_.get_max_events(); }
+
+void snet::EventLoop::set_timeout(int timeout) noexcept { poller_.set_timeout(timeout); }
+
+int snet::EventLoop::get_timeout() const noexcept { return poller_.get_timeout(); }
+
 void snet::EventLoop::loop()
 {
     if (looping_) {
