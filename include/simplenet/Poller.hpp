@@ -35,7 +35,7 @@ class Poller
 public:
     /**
      * @brief Creates an epoll fd with EPOLL_CLOEXEC and no registered channels.
-     * @param max_events Maximum events per wait, from 1 through INT_MAX inclusive;
+     * @param max_events Positive int capacity per wait, from 1 through INT_MAX inclusive;
      *                   defaults to 1024. Does not limit the number of registrations.
      * @note The capacity is validated before buffer allocation; the initial timeout is -1.
      * @throws std::invalid_argument The capacity is outside the allowed range.
@@ -43,7 +43,7 @@ public:
      * @throws std::bad_alloc Allocation of the event buffer failed.
      * @throws std::length_error The capacity exceeds the vector's limits.
      */
-    explicit Poller(size_t max_events = 1024);
+    explicit Poller(int max_events = 1024);
 
     /// @brief Copying and moving the epoll fd owner are prohibited.
     Poller(Poller &&poller) = delete;
@@ -105,13 +105,13 @@ public:
 
     /**
      * @brief Changes the maximum events per wait, not the number of registrations.
-     * @param max_events Batch capacity from 1 through INT_MAX, inclusive.
+     * @param max_events Positive int batch capacity from 1 through INT_MAX, inclusive.
      * @throws std::invalid_argument The value is outside the allowed range.
      * @throws std::bad_alloc Allocation failed while resizing the buffer.
      * @throws std::length_error The size exceeds the vector's limits.
      * @note The setting is stored only after successfully resizing the buffer.
      */
-    void set_max_events(size_t max_events);
+    void set_max_events(int max_events);
     /**
      * @brief Stores the wait timeout without validating the argument.
      * @param timeout Milliseconds: -1 waits indefinitely, 0 checks immediately,
@@ -125,7 +125,7 @@ public:
      * @brief Returns the maximum number of events per wait.
      * @return The stored batch capacity (1024 by default).
      */
-    size_t get_max_events() const noexcept;
+    int get_max_events() const noexcept;
     /**
      * @brief Returns the wait timeout.
      * @return The stored value in milliseconds (initially -1).
@@ -145,7 +145,7 @@ private:
     void modify_channel(snet::Channel *channel);
 
     int epoll_fd_ = -1;
-    size_t max_events_;
+    int max_events_;
     int timeout_ = -1;
 
     std::vector<epoll_event> events_;

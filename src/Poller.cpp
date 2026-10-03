@@ -1,6 +1,5 @@
 #include "Poller.hpp"
 
-#include <limits>
 #include <stdexcept>
 #include <system_error>
 #include <unistd.h>
@@ -8,9 +7,9 @@
 namespace
 {
 
-size_t checked_max_events(size_t value)
+int checked_max_events(int value)
 {
-    if (value == 0 || value > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    if (value <= 0) {
         throw std::invalid_argument("Invalid max_events");
     }
     return value;
@@ -18,7 +17,8 @@ size_t checked_max_events(size_t value)
 
 } // namespace
 
-snet::Poller::Poller(size_t max_events) : max_events_(checked_max_events(max_events)), events_(max_events_)
+snet::Poller::Poller(int max_events)
+    : max_events_(checked_max_events(max_events)), events_(static_cast<size_t>(max_events_))
 {
     epoll_fd_ = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd_ == -1)
@@ -70,7 +70,7 @@ void snet::Poller::remove_channel(snet::Channel *channel)
 
 const std::vector<snet::Channel *> &snet::Poller::poll()
 {
-    int num_events = epoll_wait(epoll_fd_, events_.data(), events_.size(), timeout_);
+    int num_events = epoll_wait(epoll_fd_, events_.data(), max_events_, timeout_);
 
     if (num_events == -1) {
 
@@ -98,19 +98,19 @@ const std::vector<snet::Channel *> &snet::Poller::poll()
     return active_channels_;
 }
 
-void snet::Poller::set_max_events(size_t max_events)
+void snet::Poller::set_max_events(int max_events)
 {
 
     checked_max_events(max_events);
 
-    events_.resize(max_events);
+    events_.resize(static_cast<size_t>(max_events));
 
     max_events_ = max_events;
 }
 
 void snet::Poller::set_timeout(int timeout) noexcept { timeout_ = timeout; }
 
-size_t snet::Poller::get_max_events() const noexcept { return max_events_; }
+int snet::Poller::get_max_events() const noexcept { return max_events_; }
 
 int snet::Poller::get_timeout() const noexcept { return timeout_; }
 

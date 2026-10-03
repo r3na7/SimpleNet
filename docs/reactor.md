@@ -126,8 +126,8 @@ policies for stopping, handling exceptions, and doing work between waits,
 provided it respects the common contract. The maximum events per wait
 (default: 1024) can be passed to the constructor, for example `snet::Poller poller(64)`,
 and changed later through `set_max_events()`. It does not limit registrations.
-Both operations accept capacities from 1 through INT_MAX and reject invalid values
-before allocating the event buffer.
+Both operations accept positive `int` capacities from 1 through INT_MAX and reject
+zero or negative values before converting the size for event buffer allocation.
 
 **Iterate over the internal vector by reference:** `const auto& channels = poller.poll()`.
 Successful `remove_channel()` clears the corresponding entries in that vector,
