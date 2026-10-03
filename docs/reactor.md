@@ -34,8 +34,9 @@ They run synchronously, without arguments, in the dispatch thread.
 - Do not call the next `poll()` while iterating over the previous batch,
   including from its callbacks.
 
-Channel and Poller do not check the last two restrictions. EventLoop checks
-only reentry into its own `loop()`.
+Channel rejects reentry into its own `handle_event()` with `std::logic_error`.
+Poller does not check the restriction on nested `poll()` calls. EventLoop also
+rejects reentry into its own `loop()`.
 
 ## Using EventLoop
 
@@ -181,6 +182,15 @@ callbacks in **error → read → write** order for `EPOLLERR`, `EPOLLIN`, and
 `EPOLLOUT`. Successful `remove_channel()` cancels the remaining callbacks for
 the current event; `update_channel()` and changes to the requested mask do not.
 A callback exception propagates to the caller and stops dispatch.
+
+Calling `handle_event()` again while it is already executing on the same channel
+throws `std::logic_error` before changing its dispatch state. A callback cannot
+replace or clear itself through its setter: this also throws `std::logic_error`
+and leaves the installed handler unchanged. Other handlers may be replaced;
+later callbacks in the same event use their currently installed handlers.
+Execution markers are restored on normal return, cancellation, and exceptions,
+so handlers can be replaced after their calls have ended. These checks do not
+provide thread safety or permit destroying a channel inside its own callback.
 
 The received mask is not cleared after dispatch or removal.
 `handle_event()` does not check registration, event freshness, or repeated

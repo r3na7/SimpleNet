@@ -90,6 +90,7 @@ public:
     /**
      * @brief Replaces the EPOLLIN callback.
      * @param callback A handler taking no arguments; an empty std::function disables it.
+     * @throws std::logic_error This channel's read callback is currently executing.
      * @note Runs synchronously in the handle_event() thread, performs its own I/O,
      *       and may throw exceptions. The setter does not change the interest mask.
      * @note Preparing the std::function argument (for example, copying a callable)
@@ -99,6 +100,7 @@ public:
     /**
      * @brief Replaces the EPOLLOUT callback.
      * @param callback A handler taking no arguments; an empty std::function disables it.
+     * @throws std::logic_error This channel's write callback is currently executing.
      * @note Runs synchronously in the handle_event() thread, performs its own I/O,
      *       and may throw exceptions. The setter does not change the interest mask.
      * @note Preparing the std::function argument (for example, copying a callable)
@@ -108,6 +110,7 @@ public:
     /**
      * @brief Replaces the EPOLLERR callback.
      * @param callback A handler taking no arguments; an empty std::function disables it.
+     * @throws std::logic_error This channel's error callback is currently executing.
      * @note Runs synchronously in the handle_event() thread, performs its own I/O,
      *       and may throw exceptions. The setter does not change the interest mask.
      * @note Preparing the std::function argument (for example, copying a callable)
@@ -125,12 +128,14 @@ public:
      *
      * @pre The channel is in the current Poller batch and has not been unregistered.
      * @pre The event has not been dispatched yet; the next poll() has not run.
-     * @pre handle_event() is not already executing for this channel.
      * @pre The channel and objects used by callbacks remain alive until the call completes.
+     * @throws std::logic_error handle_event() is already executing for this channel.
      * @note Callback exceptions propagate to the caller and stop dispatch.
+     * @note Dispatch and callback execution markers are restored on every exit,
+     *       including exceptions. Callbacks may replace other handlers, but not themselves.
      * @note Does not wait for events or clear the received mask. EPOLLHUP, EPOLLRDHUP,
      *       and EPOLLPRI alone do not invoke callbacks.
-     * @warning Preconditions are not checked. A repeated call may dispatch an old event;
+     * @warning Only reentry is checked. A repeated call may dispatch an old event;
      *          calling this method for an unregistered channel is invalid.
      * @warning Do not destroy this channel in its callback or call the next poll()
      *          while iterating over the current batch.
@@ -147,6 +152,7 @@ private:
     void handle_read();
     void handle_write();
     void handle_error();
+    void invoke_callback(std::function<void()> &callback);
 
     int fd_ = -1;
 
@@ -158,6 +164,8 @@ private:
     std::function<void()> error_callback_;
 
     bool dispatch_cancelled_ = false;
+    bool dispatching_ = false;
+    std::function<void()> *active_callback_ = nullptr;
 };
 
 } // namespace snet
