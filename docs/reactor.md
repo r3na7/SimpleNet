@@ -72,8 +72,21 @@ this channel and the remaining channels in the batch are still dispatched.
 It does not wake `epoll_wait()`; calls from another thread are unsupported.
 Calling it before `loop()` does not prevent startup. An exception from Poller
 or a callback stops iteration and exits `loop()` with its execution flags reset.
-Registrations remain; the loop can be restarted, but redelivery of unprocessed
-events is not guaranteed.
+Registrations remain. After a callback exception, the next `loop()` resumes
+the saved batch at the next channel before calling `poll()` again. For a batch
+A, B, C, an exception from A leaves B and C pending. A is not retried, including
+any remaining callbacks for its event. Further callback exceptions preserve
+the new continuation position in the same way.
+
+Pending channels must remain alive or be successfully unregistered before
+destruction. Removing a channel between runs clears its entry in the saved
+batch, so continuation skips it. New registrations are observed in a subsequent
+poll, not inserted into the saved batch. Resuming dispatch does not restore
+application state changed by the failed callback.
+
+An exception while preparing a batch in `Poller::poll()` has no such continuation
+guarantee: there is no successfully prepared batch to resume. If the last channel
+throws, the saved batch is already exhausted and the next run proceeds to a new poll.
 
 ## Using Poller for a custom loop
 

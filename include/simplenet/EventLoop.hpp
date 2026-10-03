@@ -57,9 +57,15 @@ public:
      * @throws std::bad_alloc Event batch preparation failed.
      * @note Callback exceptions propagate. On any exception, iteration stops and
      *       execution flags are reset.
+     * @note After a callback exception, the next loop() resumes the saved batch
+     *       at the next channel before waiting for new events. The channel that
+     *       threw and its remaining callbacks are not retried. Removed channels
+     *       are skipped; pending channels must remain alive until dispatch or removal.
+     * @note Exceptions while preparing a batch in Poller::poll() do not provide
+     *       this continuation guarantee. Resuming dispatch does not restore
+     *       application state changed by the failed callback.
      * @note Skips nullptr entries; finishes the current batch after quit().
-     *       Registrations survive exit and loop() may be called again; redelivery
-     *       of unprocessed events is not guaranteed.
+     *       Registrations survive exit and loop() may be called again.
      */
     void loop();
 
@@ -75,6 +81,9 @@ public:
 
 private:
     Poller poller_;
+
+    const std::vector<Channel *> *pending_batch_ = nullptr;
+    size_t next_channel_ = 0;
 
     bool running_ = false;
     bool looping_ = false;

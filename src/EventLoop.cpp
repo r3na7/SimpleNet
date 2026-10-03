@@ -18,12 +18,20 @@ void snet::EventLoop::loop()
     try {
         while (running_) {
 
-            auto &channels = poller_.poll();
+            if (pending_batch_ == nullptr) {
+                pending_batch_ = &poller_.poll();
+                next_channel_ = 0;
+            }
 
-            for (auto channel : channels) {
+            while (next_channel_ < pending_batch_->size()) {
+                // Advance before dispatch so a throwing channel is not retried.
+                auto *channel = (*pending_batch_)[next_channel_++];
                 if (channel != nullptr)
                     channel->handle_event();
             }
+
+            pending_batch_ = nullptr;
+            next_channel_ = 0;
         }
 
     } catch (...) {
