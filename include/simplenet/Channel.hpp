@@ -88,11 +88,14 @@ public:
     void clear_events() noexcept;
 
     /**
-     * @brief Replaces the EPOLLIN callback.
+     * @brief Replaces the read-side callback for EPOLLIN, EPOLLRDHUP, or EPOLLHUP.
      * @param callback A handler taking no arguments; an empty std::function disables it.
      * @throws std::logic_error This channel's read callback is currently executing.
      * @note Runs synchronously in the handle_event() thread, performs its own I/O,
      *       and may throw exceptions. The setter does not change the interest mask.
+     * @note Read readiness includes hangup notifications, not just available data.
+     *       The handler performs non-blocking I/O and handles EOF, EAGAIN, and errors.
+     *       Request EPOLLRDHUP explicitly in the interest mask to receive it.
      * @note Preparing the std::function argument (for example, copying a callable)
      *       may throw; the setter moves the argument into the member.
      */
@@ -122,8 +125,9 @@ public:
      * @brief Invokes callbacks for an event prepared by Poller::poll().
      *
      * Resets the cancellation flag and uses a snapshot of the received mask.
-     * Non-empty callbacks run in error, read, write order for EPOLLERR, EPOLLIN,
-     * and EPOLLOUT. Successful remove_channel() cancels the remaining calls;
+     * Non-empty callbacks run in error, read, write order: EPOLLERR invokes error,
+     * any of EPOLLIN, EPOLLRDHUP, or EPOLLHUP invokes read once, and EPOLLOUT
+     * invokes write. Successful remove_channel() cancels the remaining calls;
      * changing the requested mask or calling update_channel() does not.
      *
      * @pre The channel is in the current Poller batch and has not been unregistered.
@@ -133,8 +137,9 @@ public:
      * @note Callback exceptions propagate to the caller and stop dispatch.
      * @note Dispatch and callback execution markers are restored on every exit,
      *       including exceptions. Callbacks may replace other handlers, but not themselves.
-     * @note Does not wait for events or clear the received mask. EPOLLHUP, EPOLLRDHUP,
-     *       and EPOLLPRI alone do not invoke callbacks.
+     * @note Does not wait for events or clear the received mask. Hangup does not
+     *       automatically close the fd; unread data may remain. EPOLLPRI alone
+     *       does not invoke callbacks.
      * @warning Only reentry is checked. A repeated call may dispatch an old event;
      *          calling this method for an unregistered channel is invalid.
      * @warning Do not destroy this channel in its callback or call the next poll()

@@ -50,7 +50,7 @@ The caller configures its mode and handles I/O errors.
 // The caller created fd and keeps it open.
 snet::EventLoop loop;
 snet::Channel channel(fd);
-channel.set_events(EPOLLIN);
+channel.set_events(EPOLLIN | EPOLLRDHUP);
 channel.set_read_callback([&] {
     // Perform I/O and handle its result.
     loop.quit();
@@ -124,7 +124,7 @@ snet::Poller poller;
 poller.set_timeout(100); // Milliseconds; -1 waits indefinitely, 0 does not wait.
 bool running = true;
 snet::Channel channel(fd); // The caller has already opened fd.
-channel.add_event(EPOLLIN);
+channel.add_event(EPOLLIN | EPOLLRDHUP);
 channel.set_read_callback([&] {
     // Perform I/O and handle its result.
     running = false;
@@ -178,8 +178,10 @@ callbacks. Even after applying a zero mask, `EPOLLERR` and `EPOLLHUP` may arrive
 regardless of the requested events.
 
 `handle_event()` uses a snapshot of the received mask and invokes non-empty
-callbacks in **error → read → write** order for `EPOLLERR`, `EPOLLIN`, and
-`EPOLLOUT`. Successful `remove_channel()` cancels the remaining callbacks for
+callbacks in **error → read → write** order. `EPOLLERR` invokes error;
+any of `EPOLLIN`, `EPOLLRDHUP`, or `EPOLLHUP` invokes read once, even if multiple
+read-side bits are present; `EPOLLOUT` invokes write.
+Successful `remove_channel()` cancels the remaining callbacks for
 the current event; `update_channel()` and changes to the requested mask do not.
 A callback exception propagates to the caller and stops dispatch.
 
@@ -197,9 +199,14 @@ The received mask is not cleared after dispatch or removal.
 dispatch, and resets the cancellation flag at the start of each call. Do not
 call it manually for an unregistered channel using a saved pointer.
 
-`EPOLLHUP`, `EPOLLRDHUP`, and `EPOLLPRI` alone do not invoke callbacks.
-A custom loop can inspect them through `get_revents()`, while the standard
-EventLoop does not dispatch them. If only `EPOLLHUP` arrives, the loop may
-repeatedly receive the event without invoking a callback; unread data may remain
-after hangup. The library does not validate mask combinations or provide
+The read callback checks the incoming side through non-blocking I/O, handling
+available data, EAGAIN, EOF, and errors. Hangup may leave unread data; Channel
+does not automatically close the fd or unregister the channel. For stream sockets,
+`EPOLLRDHUP` indicates that the peer has closed or shut down its sending side;
+local sending may still be possible. The caller decides how to finish the connection.
+
+Request `EPOLLRDHUP` explicitly in the interest mask to receive it. `EPOLLHUP`
+is reported regardless of the requested mask. `EPOLLPRI` alone does not invoke
+callbacks; a custom loop can inspect it through `get_revents()`.
+The library does not validate mask combinations or provide
 separate guarantees for all combinations of `EPOLLET`, `EPOLLONESHOT`, and other flags.

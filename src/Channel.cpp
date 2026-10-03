@@ -83,7 +83,7 @@ void snet::Channel::handle_event()
             return;
     }
 
-    if (events & EPOLLIN) {
+    if (events & (EPOLLIN | EPOLLRDHUP | EPOLLHUP)) {
         handle_read();
         if (dispatch_cancelled_)
             return;
