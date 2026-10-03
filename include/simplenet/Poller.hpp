@@ -35,11 +35,15 @@ class Poller
 public:
     /**
      * @brief Creates an epoll fd with EPOLL_CLOEXEC and no registered channels.
-     * @note Initial settings: at most 1024 events per wait, timeout -1.
+     * @param max_events Maximum events per wait, from 1 through INT_MAX inclusive;
+     *                   defaults to 1024. Does not limit the number of registrations.
+     * @note The capacity is validated before buffer allocation; the initial timeout is -1.
+     * @throws std::invalid_argument The capacity is outside the allowed range.
      * @throws std::system_error epoll_create1() failed.
      * @throws std::bad_alloc Allocation of the event buffer failed.
+     * @throws std::length_error The capacity exceeds the vector's limits.
      */
-    Poller();
+    explicit Poller(size_t max_events = 1024);
 
     /// @brief Copying and moving the epoll fd owner are prohibited.
     Poller(Poller &&poller) = delete;
@@ -119,7 +123,7 @@ public:
 
     /**
      * @brief Returns the maximum number of events per wait.
-     * @return The stored batch capacity (initially 1024).
+     * @return The stored batch capacity (1024 by default).
      */
     size_t get_max_events() const noexcept;
     /**
@@ -141,7 +145,7 @@ private:
     void modify_channel(snet::Channel *channel);
 
     int epoll_fd_ = -1;
-    size_t max_events_ = 1024;
+    size_t max_events_;
     int timeout_ = -1;
 
     std::vector<epoll_event> events_;

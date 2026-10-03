@@ -1,10 +1,24 @@
 #include "Poller.hpp"
 
 #include <limits>
+#include <stdexcept>
 #include <system_error>
 #include <unistd.h>
 
-snet::Poller::Poller() : events_(max_events_)
+namespace
+{
+
+size_t checked_max_events(size_t value)
+{
+    if (value == 0 || value > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        throw std::invalid_argument("Invalid max_events");
+    }
+    return value;
+}
+
+} // namespace
+
+snet::Poller::Poller(size_t max_events) : max_events_(checked_max_events(max_events)), events_(max_events_)
 {
     epoll_fd_ = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd_ == -1)
@@ -87,9 +101,7 @@ const std::vector<snet::Channel *> &snet::Poller::poll()
 void snet::Poller::set_max_events(size_t max_events)
 {
 
-    if (max_events == 0 || max_events > static_cast<size_t>(std::numeric_limits<int>::max())) {
-        throw std::invalid_argument("Invelid max_events");
-    }
+    checked_max_events(max_events);
 
     events_.resize(max_events);
 
