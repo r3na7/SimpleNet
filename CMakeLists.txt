@@ -20,16 +20,23 @@ target_include_directories(SimpleNet
 
 target_compile_features(SimpleNet PUBLIC cxx_std_20)
 
-find_package(Doxygen REQUIRED)
+option(SIMPLENET_BUILD_DOCS "Enable the Doxygen documentation target" ON)
 
-#configure_file(
-#    "${CMAKE_SOURCE_DIR}/Doxyfile.in"
-#    "${CMAKE_BINARY_DIR}/Doxyfile"
-#)
-
-add_custom_target(docs
-    COMMAND Doxygen::doxygen "${CMAKE_BINARY_DIR}/Doxyfile"
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMMENT "Generating documentation."
-    VERBATIM
-)
+if(SIMPLENET_BUILD_DOCS)
+    find_package(Doxygen QUIET)
+    if(Doxygen_FOUND)
+        configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile"
+            @ONLY
+        )
+        add_custom_target(docs
+            COMMAND Doxygen::doxygen "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            COMMENT "Generating SimpleNet documentation."
+            VERBATIM
+        )
+    else()
+        message(STATUS "Doxygen not found: the docs target is disabled")
+    endif()
+endif()
