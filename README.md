@@ -26,6 +26,38 @@ cmake --build build
 Include the public API with `#include <simplenet/Simplenet.hpp>`.
 When using CMake, link your application to the `SimpleNet` target.
 
+## Tests
+
+Reactor regression tests are built by default and use GoogleTest 1.17.0.
+CMake downloads and builds this pinned release through FetchContent; a separate
+GoogleTest installation is not needed. The first configuration requires Git
+and internet access. GoogleMock and GoogleTest installation targets are disabled.
+Run the tests with:
+
+```sh
+cmake -S . -B build -DBUILD_TESTING=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+CMake discovers GoogleTest cases automatically. Each case runs in a separate
+process with a ten-second timeout. Tests use real
+Linux eventfd descriptors, pipes, socket pairs, and signals. They cover registration
+failures, mask changes, channel removal during dispatch, callback guards, hangup and
+half-close, loop termination, continuation after exceptions, and interrupted waits.
+GoogleTest assertions remain active in Release builds.
+
+To build only the library without requiring GoogleTest, configure with
+`-DBUILD_TESTING=OFF`; GoogleTest is not downloaded in this mode.
+
+For an offline build, provide an existing GoogleTest source tree, preferably
+the same 1.17.0 release:
+
+```sh
+cmake -S . -B build -DBUILD_TESTING=ON \
+    -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest
+```
+
 ## Doxygen documentation
 
 Install Doxygen and reconfigure CMake, then run:

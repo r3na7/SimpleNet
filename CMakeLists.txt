@@ -20,6 +20,11 @@ target_include_directories(SimpleNet
 
 target_compile_features(SimpleNet PUBLIC cxx_std_20)
 
+include(CTest)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
+
 option(SIMPLENET_BUILD_DOCS "Enable the Doxygen documentation target" ON)
 
 if(SIMPLENET_BUILD_DOCS)
