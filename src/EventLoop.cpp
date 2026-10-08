@@ -44,6 +44,7 @@ void snet::EventLoop::loop()
             pending_batch_ = nullptr;
             next_channel_ = 0;
             run_work();
+            collect_retired();
         }
 
     } catch (...) {
@@ -122,5 +123,23 @@ void snet::EventLoop::run_work()
         try { work->action_(); }
         catch (...) { work->executing_ = false; throw; }
         work->executing_ = false;
+    }
+}
+
+void snet::EventLoop::retire_erased(std::unique_ptr<detail::RetirementEntry> entry) noexcept
+{
+    entry->next_ = retired_;
+    retired_ = entry.release();
+}
+
+void snet::EventLoop::collect_retired() noexcept
+{
+    auto** cursor = &retired_;
+    while (*cursor) {
+        auto* entry = *cursor;
+        if (entry->can_destroy()) {
+            *cursor = entry->next_;
+            delete entry;
+        } else cursor = &entry->next_;
     }
 }

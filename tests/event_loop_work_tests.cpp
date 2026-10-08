@@ -126,3 +126,109 @@ TEST(LoopWorkTest, SocketAndWorkBothProgress)
     loop.remove_channel(&channel);
     close(fd);
 }
+
+namespace {
+struct Probe {
+    snet::EventLoop& loop;
+    bool& destroyed;
+    int fd;
+    snet::Channel channel;
+    snet::detail::LoopWork notification;
+    bool inside = false;
+    Probe(snet::EventLoop& l, bool& d, std::function<void()> action)
+        : loop(l), destroyed(d), fd(eventfd(1, EFD_NONBLOCK | EFD_CLOEXEC)),
+          channel(fd), notification(l, std::move(action)) {}
+    ~Probe() noexcept { destroyed = true; if (fd != -1) close(fd); }
+};
+bool can_destroy_probe(const Probe& p) noexcept {
+    return !p.inside && !p.notification.pending() && !p.notification.executing();
+}
+void cancel_probe(Probe& p) noexcept { p.notification.cancel(); }
+}
+
+TEST(RetirementTest, CallbackOwnerSurvives)
+{
+    snet::EventLoop loop;
+    bool destroyed = false;
+    auto owner = std::make_unique<Probe>(loop, destroyed, [] {});
+    auto slot = loop.prepare_retirement<Probe>(can_destroy_probe, cancel_probe);
+    auto* raw = owner.get();
+    raw->channel.set_events(EPOLLIN);
+    raw->channel.set_read_callback([&] {
+        raw->inside = true;
+        loop.remove_channel(&raw->channel);
+        loop.retire(std::move(slot), std::move(owner));
+        EXPECT_FALSE(destroyed);
+        raw->inside = false;
+        loop.quit();
+    });
+    loop.update_channel(&raw->channel);
+    loop.loop();
+    EXPECT_TRUE(destroyed);
+    EXPECT_EQ(owner.get(), nullptr);
+}
+
+TEST(RetirementTest, WaitsForPendingNotification)
+{
+    snet::EventLoop loop;
+    loop.set_work_budget(1);
+    bool destroyed = false;
+    int notifications = 0;
+    auto owner = std::make_unique<Probe>(loop, destroyed, [&] {
+        EXPECT_FALSE(destroyed); ++notifications; loop.quit();
+    });
+    auto slot = loop.prepare_retirement<Probe>(can_destroy_probe, cancel_probe);
+    snet::detail::LoopWork kickoff(loop, [&] {
+        owner->notification.schedule();
+        loop.retire(std::move(slot), std::move(owner));
+        loop.quit();
+    });
+    kickoff.schedule(); loop.loop();
+    EXPECT_FALSE(destroyed);
+    loop.loop();
+    EXPECT_TRUE(destroyed);
+    EXPECT_EQ(notifications, 1);
+}
+
+TEST(RetirementTest, UnregistersBeforeFdReuse)
+{
+    snet::EventLoop loop;
+    bool first_destroyed = false, second_destroyed = false;
+    auto first = std::make_unique<Probe>(loop, first_destroyed, [] {});
+    auto second = std::make_unique<Probe>(loop, second_destroyed, [] {});
+    auto first_slot = loop.prepare_retirement<Probe>(can_destroy_probe, cancel_probe);
+    auto second_slot = loop.prepare_retirement<Probe>(can_destroy_probe, cancel_probe);
+    int stale_calls = 0, new_calls = 0, reused_fd = -1;
+    bool handled = false;
+    std::unique_ptr<snet::Channel> replacement;
+    auto handle = [&](Probe* current) {
+        if (handled) { ++stale_calls; return; }
+        handled = true;
+        Probe* victim = current == first.get() ? second.get() : first.get();
+        loop.remove_channel(&current->channel);
+        loop.remove_channel(&victim->channel);
+        reused_fd = victim->fd;
+        close(victim->fd); victim->fd = -1;
+        const int source = eventfd(1, EFD_NONBLOCK | EFD_CLOEXEC);
+        ASSERT_GE(source, 0);
+        if (source != reused_fd) { ASSERT_EQ(dup2(source, reused_fd), reused_fd); close(source); }
+        replacement = std::make_unique<snet::Channel>(reused_fd);
+        replacement->set_events(EPOLLIN);
+        replacement->set_read_callback([&] { ++new_calls; loop.quit(); });
+        loop.update_channel(replacement.get());
+        loop.retire(std::move(first_slot), std::move(first));
+        loop.retire(std::move(second_slot), std::move(second));
+        loop.quit();
+    };
+    auto* a = first.get(); auto* b = second.get();
+    a->channel.set_events(EPOLLIN); b->channel.set_events(EPOLLIN);
+    a->channel.set_read_callback([&] { handle(a); });
+    b->channel.set_read_callback([&] { handle(b); });
+    loop.update_channel(&a->channel); loop.update_channel(&b->channel);
+    loop.loop();
+    EXPECT_TRUE(first_destroyed); EXPECT_TRUE(second_destroyed);
+    EXPECT_EQ(stale_calls, 0); EXPECT_EQ(new_calls, 0);
+    loop.loop();
+    EXPECT_EQ(new_calls, 1);
+    loop.remove_channel(replacement.get()); close(reused_fd);
+}

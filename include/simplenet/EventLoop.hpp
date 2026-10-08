@@ -9,6 +9,10 @@
 #include "detail/LoopWork.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <cassert>
+#include <memory>
+#include <stdexcept>
+#include "detail/Retirement.hpp"
 
 namespace snet
 {
@@ -113,6 +117,26 @@ public:
      */
     void loop();
 
+    template<class T>
+    std::unique_ptr<detail::RetirementSlot<T>> prepare_retirement(
+        bool (*can_destroy)(const T&) noexcept,
+        void (*cancel_pending)(T&) noexcept)
+    {
+        if (!can_destroy || !cancel_pending)
+            throw std::invalid_argument("Retirement hooks must not be empty");
+        return std::unique_ptr<detail::RetirementSlot<T>>(
+            new detail::RetirementSlot<T>(*this, can_destroy, cancel_pending));
+    }
+
+    template<class T>
+    void retire(std::unique_ptr<detail::RetirementSlot<T>> slot,
+                std::unique_ptr<T> object) noexcept
+    {
+        assert(slot && object && slot->loop_ == this && !slot->object_);
+        slot->object_ = std::move(object);
+        retire_erased(std::move(slot));
+    }
+
     void set_work_budget(std::size_t count);
     std::size_t get_work_budget() const noexcept { return work_budget_; }
     std::uint64_t iteration_id() const noexcept { return iteration_id_; }
@@ -132,6 +156,9 @@ private:
     void schedule_work(detail::LoopWork& work) noexcept;
     void cancel_work(detail::LoopWork& work) noexcept;
     void run_work();
+    void retire_erased(std::unique_ptr<detail::RetirementEntry> entry) noexcept;
+    void collect_retired() noexcept;
+    detail::RetirementEntry* retired_ = nullptr;
     detail::WorkQueue queues_[2];
     detail::WorkQueue* ready_ = &queues_[0];
     detail::WorkQueue* phase_ = &queues_[1];
