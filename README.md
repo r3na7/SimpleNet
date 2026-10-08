@@ -1,9 +1,10 @@
 # SimpleNet
 
 `snet` is a modular C++20 library of networking components for Linux.
-The current API provides socket address values, exclusive socket ownership, and a single-threaded Reactor
+The current API provides socket address values, socket ownership, a contiguous byte buffer, and a single-threaded Reactor
 based on `epoll`.
 
+- `snet::Buffer` stores bytes and exposes contiguous readable and prepared writable regions.
 - `snet::Socket` owns an already-open socket descriptor and closes it through RAII.
 - `snet::Address` stores an IPv4, IPv6, or Unix domain socket address.
 - `snet::Channel` associates an existing fd with event masks and callbacks.
@@ -12,7 +13,7 @@ based on `epoll`.
 
 Channels do not own monitored fds. The caller controls socket creation,
 non-blocking mode, I/O, and resource lifetimes. TCP lifecycle management and
-buffering are not yet implemented. Contracts and examples for both loop models
+connection-level buffering are not yet implemented. Contracts and examples for both loop models
 are described in the [Reactor guide](docs/reactor.md).
 
 ## Socket ownership
@@ -57,6 +58,56 @@ the descriptor number may already have been released and reused; see
 Closing does not confirm delivery of TCP data to the peer. `Socket` adds ownership,
 not TCP connection lifecycle management.
 
+## Byte buffering
+
+`Buffer` stores bytes independently of sockets, protocols, and connection limits.
+It keeps read and write positions in contiguous storage, so consuming a prefix does
+not move the remaining bytes:
+
+```cpp
+#include <simplenet/Simplenet.hpp>
+#include <array>
+
+void buffer_example()
+{
+    snet::Buffer buffer;
+    const std::array<char, 4> input{'A', 'B', 'C', 'D'};
+    buffer.append(input);
+    buffer.consume(2); // data() now exposes C,D.
+
+    auto readable = buffer.data(); // Borrowed, read-only access.
+    (void)readable;
+    auto writable = buffer.prepare_write(2); // May compact or grow storage.
+    writable[0] = 'E';
+    writable[1] = 'F';
+    buffer.commit_write(2); // The useful sequence is now C,D,E,F.
+}
+```
+
+`prepare_write(n)` prepares existing writable elements before an external operation
+writes bytes. Its returned span may be larger than requested. `commit_write(n)`
+marks the actual written count as useful without allocating; it does not inspect
+whether those bytes were written. Do not modify the buffer between preparing,
+writing, and committing. `consume(n)` marks a prefix as used; consuming the whole
+sequence resets positions and retains memory. `readable_size()`, `writable_size()`,
+and `empty()` report the current regions. Storage grows geometrically and is
+compacted when consumed space suffices. There is no built-in connection limit.
+
+`append` copies the entire source or adds nothing on allocation failure. Existing
+useful bytes survive failed preparation or append. `append(buffer.data())` and
+subranges of that current readable view are supported: their source is staged
+before storage can move. Views of this buffer's consumed or writable regions are
+not valid sources for this overload. Zero-count operations do nothing.
+Over-consuming or over-committing throws `std::out_of_range` before changing the
+buffer; an impossible preparation size throws `std::length_error`.
+
+Readable and writable spans borrow memory. Obtain them again after any modifying
+operation, including preparation, assignment, and movement; never keep them after
+the buffer is destroyed. Copying creates independent storage. Moving leaves the
+source logically empty and reusable; self-move preserves its value. For future
+socket reads, prepare memory before receiving bytes so allocation failure cannot
+lose bytes already taken from the kernel.
+
 ## Building
 
 Requires Linux, CMake 3.20 or later, and a compiler with C++20 support.
@@ -71,7 +122,7 @@ When using CMake, link your application to the `SimpleNet` target.
 
 ## Tests
 
-Reactor and Socket regression tests are built by default and use GoogleTest 1.17.0.
+Reactor, Socket, and Buffer regression tests are built by default and use GoogleTest 1.17.0.
 CMake downloads and builds this pinned release through FetchContent; a separate
 GoogleTest installation is not needed. The first configuration requires Git
 and internet access. GoogleMock and GoogleTest installation targets are disabled.
@@ -92,6 +143,9 @@ Socket tests cover move ownership, release, descriptor zero, stack unwinding, an
 reused descriptor numbers. An isolated test executable uses linker interception to
 verify the single-attempt close policy and preservation of errno on simulated errors;
 the production library contains no test hooks.
+Buffer tests cover binary byte order, compaction, growth, self-append, count errors,
+copy/move lifetimes, and preservation after allocation failure. A separate executable
+replaces allocation functions only for those failure and allocation-count checks.
 GoogleTest assertions remain active in Release builds.
 
 To build only the library without requiring GoogleTest, configure with

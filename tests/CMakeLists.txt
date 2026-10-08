@@ -43,3 +43,8 @@ gtest_discover_tests(simplenet_socket_close_tests TEST_PREFIX socketclose. PROPE
 add_executable(simplenet_buffer_tests buffer_tests.cpp)
 target_link_libraries(simplenet_buffer_tests PRIVATE SimpleNet GTest::gtest_main)
 gtest_discover_tests(simplenet_buffer_tests TEST_PREFIX buffer. PROPERTIES TIMEOUT 10)
+
+# Allocation replacement is isolated from the other tests and production API.
+add_executable(simplenet_buffer_allocation_tests buffer_allocation_tests.cpp)
+target_link_libraries(simplenet_buffer_allocation_tests PRIVATE SimpleNet GTest::gtest_main)
+gtest_discover_tests(simplenet_buffer_allocation_tests TEST_PREFIX bufferalloc. PROPERTIES TIMEOUT 10)
