@@ -232,3 +232,69 @@ TEST(RetirementTest, UnregistersBeforeFdReuse)
     EXPECT_EQ(new_calls, 1);
     loop.remove_channel(replacement.get()); close(reused_fd);
 }
+
+TEST(LoopWorkTest, ExceptionPreservesLiveWork)
+{
+    snet::EventLoop loop;
+    int throwing_calls = 0, other_live_calls = 0;
+    snet::detail::LoopWork throwing(loop, [&] { ++throwing_calls; throw std::runtime_error("original"); });
+    snet::detail::LoopWork other(loop, [&] { ++other_live_calls; loop.quit(); });
+    throwing.schedule(); other.schedule();
+    EXPECT_THROW(loop.loop(), std::runtime_error);
+    EXPECT_FALSE(throwing.executing());
+    EXPECT_TRUE(other.pending());
+    loop.loop();
+    EXPECT_EQ(throwing_calls, 1); EXPECT_EQ(other_live_calls, 1);
+}
+
+TEST(RetirementTest, ExceptionCancelsNotification)
+{
+    snet::EventLoop loop;
+    bool destroyed = false;
+    int notifications = 0;
+    auto owner = std::make_unique<Probe>(loop, destroyed, [&] { ++notifications; });
+    auto slot = loop.prepare_retirement<Probe>(can_destroy_probe, cancel_probe);
+    snet::detail::LoopWork close_then_throw(loop, [&] {
+        owner->notification.schedule();
+        loop.retire(std::move(slot), std::move(owner));
+        throw std::runtime_error("original");
+    });
+    close_then_throw.schedule();
+    EXPECT_THROW(loop.loop(), std::runtime_error);
+    EXPECT_TRUE(destroyed);
+    EXPECT_EQ(notifications, 0);
+}
+
+TEST(RetirementTest, ExceptionWithSavedBatch)
+{
+    snet::EventLoop loop;
+    bool first_destroyed = false, second_destroyed = false;
+    int notifications = 0, calls = 0;
+    auto first = std::make_unique<Probe>(loop, first_destroyed, [&] { ++notifications; });
+    auto second = std::make_unique<Probe>(loop, second_destroyed, [&] { ++notifications; });
+    auto first_slot = loop.prepare_retirement<Probe>(can_destroy_probe, cancel_probe);
+    auto second_slot = loop.prepare_retirement<Probe>(can_destroy_probe, cancel_probe);
+    auto handle = [&](Probe* current) {
+        ++calls;
+        loop.remove_channel(&current->channel);
+        if (calls == 1) {
+            current->notification.schedule();
+            if (current == first.get()) loop.retire(std::move(first_slot), std::move(first));
+            else loop.retire(std::move(second_slot), std::move(second));
+            throw std::runtime_error("original");
+        }
+        loop.quit();
+    };
+    auto* a = first.get(); auto* b = second.get();
+    a->channel.set_events(EPOLLIN); b->channel.set_events(EPOLLIN);
+    a->channel.set_read_callback([&] { handle(a); });
+    b->channel.set_read_callback([&] { handle(b); });
+    loop.update_channel(&a->channel); loop.update_channel(&b->channel);
+    EXPECT_THROW(loop.loop(), std::runtime_error);
+    EXPECT_NE(first_destroyed, second_destroyed);
+    EXPECT_EQ(notifications, 0);
+    loop.loop();
+    EXPECT_EQ(calls, 2);
+    if (first) loop.remove_channel(&first->channel);
+    if (second) loop.remove_channel(&second->channel);
+}

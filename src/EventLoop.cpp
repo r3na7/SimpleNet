@@ -48,6 +48,8 @@ void snet::EventLoop::loop()
         }
 
     } catch (...) {
+        for (auto* entry = retired_; entry; entry = entry->next_) entry->cancel_pending();
+        collect_retired();
         running_ = false;
         looping_ = false;
         throw;
