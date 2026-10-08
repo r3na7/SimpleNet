@@ -30,7 +30,8 @@ void snet::EventLoop::loop()
             ++iteration_id_;
 
             if (pending_batch_ == nullptr) {
-                pending_batch_ = &poller_.poll_with_timeout((ready_->head || phase_->head) ? 0 : poller_.get_timeout());
+                pending_batch_ = &poller_.poll_with_timeout(
+                    (ready_->head || phase_->head || cleanup_requested_) ? 0 : poller_.get_timeout());
                 next_channel_ = 0;
             }
 
@@ -44,6 +45,7 @@ void snet::EventLoop::loop()
             pending_batch_ = nullptr;
             next_channel_ = 0;
             run_work();
+            run_cleanup(detail::CleanupReason::normal);
             collect_retired();
         }
 
@@ -153,4 +155,16 @@ snet::EventLoop::~EventLoop() noexcept
         delete entry;
     }
     assert(all_work_ == nullptr); // External registrations must not outlive the loop.
+}
+
+void snet::EventLoop::request_cleanup() noexcept { cleanup_requested_ = true; }
+
+void snet::EventLoop::run_cleanup(detail::CleanupReason reason) noexcept
+{
+    assert(!cleaning_);
+    cleanup_requested_ = false;
+    cleaning_ = true;
+    for (auto *registration = cleanup_head_; registration; registration = registration->next_)
+        registration->action_(registration->context_, reason);
+    cleaning_ = false;
 }

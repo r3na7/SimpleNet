@@ -12,6 +12,7 @@ add_library(SimpleNet STATIC
     src/Poller.cpp
     src/EventLoop.cpp
     src/detail/LoopWork.cpp
+    src/detail/LoopCleanup.cpp
 )
 
 target_include_directories(SimpleNet

@@ -25,3 +25,7 @@ gtest_discover_tests(simplenet_event_loop_work_tests TEST_PREFIX loopwork. PROPE
 add_executable(simplenet_event_loop_noalloc_tests event_loop_noalloc_tests.cpp)
 target_link_libraries(simplenet_event_loop_noalloc_tests PRIVATE SimpleNet GTest::gtest_main)
 gtest_discover_tests(simplenet_event_loop_noalloc_tests TEST_PREFIX loopalloc. PROPERTIES TIMEOUT 10)
+
+add_executable(simplenet_event_loop_cleanup_tests event_loop_cleanup_tests.cpp)
+target_link_libraries(simplenet_event_loop_cleanup_tests PRIVATE SimpleNet GTest::gtest_main)
+gtest_discover_tests(simplenet_event_loop_cleanup_tests TEST_PREFIX loopcleanup. PROPERTIES TIMEOUT 10)

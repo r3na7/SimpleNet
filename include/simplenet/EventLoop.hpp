@@ -6,6 +6,7 @@
  */
 
 #include "Poller.hpp"
+#include "detail/LoopCleanup.hpp"
 #include "detail/LoopWork.hpp"
 #include "detail/Retirement.hpp"
 #include <cassert>
@@ -183,8 +184,17 @@ public:
      */
     void quit();
 
+    /// @brief Requests a nonblocking pass to the owner cleanup phase; never invokes hooks synchronously.
+    /// @pre Called in the loop thread; does not wake another thread's epoll_wait.
+    void request_cleanup() noexcept;
+
 private:
     friend class detail::LoopWork;
+    friend class detail::LoopCleanup;
+    void run_cleanup(detail::CleanupReason reason) noexcept;
+    detail::LoopCleanup *cleanup_head_ = nullptr;
+    bool cleanup_requested_ = false;
+    bool cleaning_ = false;
     void schedule_work(detail::LoopWork &work) noexcept;
     void cancel_work(detail::LoopWork &work) noexcept;
     void run_work();
