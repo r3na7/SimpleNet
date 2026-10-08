@@ -8,6 +8,7 @@ namespace snet {
 class EventLoop;
 namespace detail {
 
+/// @cond INTERNAL
 class RetirementEntry {
 public:
     RetirementEntry(const RetirementEntry&) = delete;
@@ -24,9 +25,16 @@ private:
     RetirementEntry* next_ = nullptr;
 };
 
-// Separate, preallocated storage takes ownership without moving T or allocating.
+/// @endcond
+
+/**
+ * @brief Separate prepared storage for deferred object ownership.
+ * @tparam T A stable-address type with a noexcept destructor.
+ * @note Created by EventLoop::prepare_retirement and transferred by EventLoop::retire.
+ *       Empty slots can be destroyed before transfer without affecting the object.
+ */
 template<class T> class RetirementSlot final : public RetirementEntry {
-public:
+private:
     bool can_destroy() const noexcept override { return ready_(*object_); }
     void cancel_pending() noexcept override { cancel_(*object_); }
 private:

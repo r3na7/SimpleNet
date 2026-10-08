@@ -335,3 +335,26 @@ TEST(RetirementTest, InvalidPreparationPreservesOwner)
     EXPECT_NE(owner.get(), nullptr);
     EXPECT_FALSE(destroyed);
 }
+
+TEST(LoopWorkTest, DestructorCancelsPendingInEitherGeneration)
+{
+    for (bool leftover_phase : {false, true}) {
+        snet::EventLoop loop;
+        loop.set_work_budget(1);
+        int cancelled_calls = 0, survivor_calls = 0;
+        auto victim = std::make_unique<snet::detail::LoopWork>(loop, [&] { ++cancelled_calls; });
+        snet::detail::LoopWork kickoff(loop, [&] { loop.quit(); });
+        snet::detail::LoopWork destroyer(loop, [&] { victim.reset(); });
+        snet::detail::LoopWork survivor(loop, [&] { ++survivor_calls; loop.quit(); });
+        if (leftover_phase) {
+            kickoff.schedule(); victim->schedule(); survivor.schedule();
+            loop.loop(); // Victim and survivor remain in the older phase.
+            victim.reset(); // No explicit cancel.
+        } else {
+            destroyer.schedule(); victim->schedule(); survivor.schedule();
+        }
+        loop.loop();
+        EXPECT_EQ(cancelled_calls, 0);
+        EXPECT_EQ(survivor_calls, 1);
+    }
+}

@@ -124,8 +124,16 @@ public:
     /// All externally owned registrations/objects must already be destroyed.
     ~EventLoop() noexcept;
 
-    /// Allocates an empty ownership slot before dispatch; hooks are internal,
-    /// noexcept, and must not call application callbacks or reenter the loop.
+    /**
+     * @brief Allocates an empty ownership slot before dispatch.
+     * @tparam T An object type with a noexcept destructor.
+     * @param can_destroy Internal hook checking that no executing/pending references remain.
+     * @param cancel_pending Internal hook canceling object-local work/notifications.
+     * @return An empty stable-address slot belonging to this loop.
+     * @throws std::invalid_argument Either hook is null.
+     * @throws std::bad_alloc Slot allocation failed.
+     * @pre Hooks do not invoke application callbacks, reenter loop, or mutate retirement.
+     */
     template<class T>
     std::unique_ptr<detail::RetirementSlot<T>> prepare_retirement(
         bool (*can_destroy)(const T&) noexcept,
@@ -137,8 +145,14 @@ public:
             new detail::RetirementSlot<T>(*this, can_destroy, cancel_pending));
     }
 
-    /// Transfer a same-loop slot and unregistered object without allocation.
-    /// Non-null arguments and no further external owner are required.
+    /**
+     * @brief Transfers prepared ownership without allocating or moving the object.
+     * @tparam T The type of the owned object.
+     * @param slot An empty non-null slot prepared by this loop.
+     * @param object A non-null unique owner transferred exactly once.
+     * @pre All Channels in the object are successfully unregistered.
+     * @note Collection waits until dispatch has unwound and the internal readiness hook allows it.
+     */
     template<class T>
     void retire(std::unique_ptr<detail::RetirementSlot<T>> slot,
                 std::unique_ptr<T> object) noexcept
@@ -148,9 +162,18 @@ public:
         retire_erased(std::move(slot));
     }
 
-    /// Positive bound on prepared records serviced per iteration (default 64).
+    /**
+     * @brief Changes the bound on prepared records serviced per iteration.
+     * @param count Positive number of records; initially 64.
+     * @throws std::invalid_argument The count is zero; the previous bound remains.
+     * @note Changes made during a work phase apply to the next phase.
+     */
     void set_work_budget(std::size_t count);
+    /// @brief Returns the stored prepared-work bound.
+    /// @return The positive record limit, initially 64.
     std::size_t get_work_budget() const noexcept { return work_budget_; }
+    /// @brief Returns an iteration token for equality comparisons only; wraparound is allowed.
+    /// @return The current unsigned iteration token, initially zero.
     std::uint64_t iteration_id() const noexcept { return iteration_id_; }
 
     /**
