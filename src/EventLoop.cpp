@@ -50,6 +50,7 @@ void snet::EventLoop::loop()
         }
 
     } catch (...) {
+        run_cleanup(detail::CleanupReason::exception);
         for (auto *entry = retired_; entry; entry = entry->next_)
             entry->cancel_pending();
         collect_retired();
