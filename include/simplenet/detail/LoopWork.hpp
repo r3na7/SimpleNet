@@ -42,10 +42,10 @@ public:
     void cancel() noexcept;
     /// @brief Checks both queue generations.
     /// @return True if an invocation is waiting.
-    bool pending() const noexcept { return pending_; }
+    bool pending() const noexcept;
     /// @brief Checks whether this registration's action is executing.
     /// @return True inside the action; false after normal or exceptional return.
-    bool executing() const noexcept { return executing_; }
+    bool executing() const noexcept;
 
 private:
     friend class snet::EventLoop;
