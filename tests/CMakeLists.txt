@@ -39,3 +39,7 @@ add_executable(simplenet_socket_close_tests socket_close_tests.cpp)
 target_link_libraries(simplenet_socket_close_tests PRIVATE SimpleNet GTest::gtest_main)
 target_link_options(simplenet_socket_close_tests PRIVATE -Wl,--wrap=close)
 gtest_discover_tests(simplenet_socket_close_tests TEST_PREFIX socketclose. PROPERTIES TIMEOUT 10)
+
+add_executable(simplenet_buffer_tests buffer_tests.cpp)
+target_link_libraries(simplenet_buffer_tests PRIVATE SimpleNet GTest::gtest_main)
+gtest_discover_tests(simplenet_buffer_tests TEST_PREFIX buffer. PROPERTIES TIMEOUT 10)
