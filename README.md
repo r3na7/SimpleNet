@@ -1,9 +1,10 @@
 # SimpleNet
 
 `snet` is a modular C++20 library of networking components for Linux.
-The current API provides socket address values and a single-threaded Reactor
+The current API provides socket address values, exclusive socket ownership, and a single-threaded Reactor
 based on `epoll`.
 
+- `snet::Socket` owns an already-open socket descriptor and closes it through RAII.
 - `snet::Address` stores an IPv4, IPv6, or Unix domain socket address.
 - `snet::Channel` associates an existing fd with event masks and callbacks.
 - `snet::Poller` registers channels and waits for events, allowing custom loops.
@@ -13,6 +14,48 @@ Channels do not own monitored fds. The caller controls socket creation,
 non-blocking mode, I/O, and resource lifetimes. TCP lifecycle management and
 buffering are not yet implemented. Contracts and examples for both loop models
 are described in the [Reactor guide](docs/reactor.md).
+
+## Socket ownership
+
+`Socket` takes exclusive ownership of an already-open socket. It does not create
+connections, change descriptor flags, or perform I/O:
+
+```cpp
+#include <simplenet/Simplenet.hpp>
+#include <cerrno>
+#include <system_error>
+#include <sys/socket.h>
+#include <utility>
+
+void example()
+{
+    int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (fd == -1)
+        throw std::system_error(errno, std::generic_category(), "socket");
+
+    snet::Socket first(fd);                 // Ownership transfers to first.
+    snet::Socket second(std::move(first)); // first is now empty.
+    int borrowed_fd = second.get_fd();     // Borrowed access for system calls.
+    (void)borrowed_fd;
+} // second closes the descriptor; first does nothing.
+```
+
+Copying is prohibited. Move assignment closes the destination's previous socket
+before taking ownership; self-move preserves it. `release()` returns the descriptor
+and leaves the wrapper empty without closing it: the recipient must then own its
+cleanup. `get_fd()` does not transfer ownership; never independently close or adopt
+that borrowed descriptor. `is_open()` reports wrapper state, without querying the
+kernel. A default-constructed or moved-from socket holds `-1`; descriptor zero is
+valid. Negative adoption arguments throw `std::invalid_argument`.
+
+Remove any associated Channel from its Poller before closing, destroying, or
+replacing its owning Socket. `close()` makes the wrapper empty, attempts the Linux close system call
+at most once, and preserves `errno`. Errors are not reported by this `void` API.
+On Linux a close error, including `EINTR`, must not trigger another attempt because
+the descriptor number may already have been released and reused; see
+[close(2)](https://man7.org/linux/man-pages/man2/close.2.html).
+Closing does not confirm delivery of TCP data to the peer. `Socket` adds ownership,
+not TCP connection lifecycle management.
 
 ## Building
 
@@ -28,7 +71,7 @@ When using CMake, link your application to the `SimpleNet` target.
 
 ## Tests
 
-Reactor regression tests are built by default and use GoogleTest 1.17.0.
+Reactor and Socket regression tests are built by default and use GoogleTest 1.17.0.
 CMake downloads and builds this pinned release through FetchContent; a separate
 GoogleTest installation is not needed. The first configuration requires Git
 and internet access. GoogleMock and GoogleTest installation targets are disabled.
@@ -45,6 +88,10 @@ process with a ten-second timeout. Tests use real
 Linux eventfd descriptors, pipes, socket pairs, and signals. They cover registration
 failures, mask changes, channel removal during dispatch, callback guards, hangup and
 half-close, loop termination, continuation after exceptions, and interrupted waits.
+Socket tests cover move ownership, release, descriptor zero, stack unwinding, and
+reused descriptor numbers. An isolated test executable uses linker interception to
+verify the single-attempt close policy and preservation of errno on simulated errors;
+the production library contains no test hooks.
 GoogleTest assertions remain active in Release builds.
 
 To build only the library without requiring GoogleTest, configure with

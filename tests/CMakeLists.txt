@@ -33,3 +33,9 @@ gtest_discover_tests(simplenet_event_loop_cleanup_tests TEST_PREFIX loopcleanup.
 add_executable(simplenet_socket_tests socket_tests.cpp)
 target_link_libraries(simplenet_socket_tests PRIVATE SimpleNet GTest::gtest_main)
 gtest_discover_tests(simplenet_socket_tests TEST_PREFIX socket. PROPERTIES TIMEOUT 10)
+
+# Interception is confined to this executable; the production library has no test hooks.
+add_executable(simplenet_socket_close_tests socket_close_tests.cpp)
+target_link_libraries(simplenet_socket_close_tests PRIVATE SimpleNet GTest::gtest_main)
+target_link_options(simplenet_socket_close_tests PRIVATE -Wl,--wrap=close)
+gtest_discover_tests(simplenet_socket_close_tests TEST_PREFIX socketclose. PROPERTIES TIMEOUT 10)
