@@ -7,6 +7,8 @@
 
 #include "Poller.hpp"
 #include "detail/LoopWork.hpp"
+#include <cstddef>
+#include <cstdint>
 
 namespace snet
 {
@@ -111,6 +113,10 @@ public:
      */
     void loop();
 
+    void set_work_budget(std::size_t count);
+    std::size_t get_work_budget() const noexcept { return work_budget_; }
+    std::uint64_t iteration_id() const noexcept { return iteration_id_; }
+
     /**
      * @brief Requests termination after the current event batch.
      * @pre Called in the same thread that runs loop().
@@ -126,8 +132,11 @@ private:
     void schedule_work(detail::LoopWork& work) noexcept;
     void cancel_work(detail::LoopWork& work) noexcept;
     void run_work();
-    detail::LoopWork* work_head_ = nullptr;
-    detail::LoopWork* work_tail_ = nullptr;
+    detail::WorkQueue queues_[2];
+    detail::WorkQueue* ready_ = &queues_[0];
+    detail::WorkQueue* phase_ = &queues_[1];
+    std::size_t work_budget_ = 64;
+    std::uint64_t iteration_id_ = 0;
     detail::LoopWork* all_work_ = nullptr;
     Poller poller_;
 

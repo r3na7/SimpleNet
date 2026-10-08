@@ -27,9 +27,10 @@ void snet::EventLoop::loop()
 
     try {
         while (running_) {
+            ++iteration_id_;
 
             if (pending_batch_ == nullptr) {
-                pending_batch_ = &poller_.poll_with_timeout(work_head_ ? 0 : poller_.get_timeout());
+                pending_batch_ = &poller_.poll_with_timeout((ready_->head || phase_->head) ? 0 : poller_.get_timeout());
                 next_channel_ = 0;
             }
 
@@ -78,32 +79,44 @@ snet::detail::LoopWork::~LoopWork() noexcept
 void snet::detail::LoopWork::schedule() noexcept { loop_.schedule_work(*this); }
 void snet::detail::LoopWork::cancel() noexcept { loop_.cancel_work(*this); }
 
+
+void snet::EventLoop::set_work_budget(std::size_t count)
+{
+    if (count == 0) throw std::invalid_argument("Work budget must be positive");
+    work_budget_ = count;
+}
+
 void snet::EventLoop::schedule_work(detail::LoopWork& work) noexcept
 {
     if (work.pending_) return;
     work.pending_ = true;
-    work.prev_ = work_tail_;
+    work.queue_ = ready_;
+    work.prev_ = ready_->tail;
     work.next_ = nullptr;
-    if (work_tail_) work_tail_->next_ = &work;
-    else work_head_ = &work;
-    work_tail_ = &work;
+    if (ready_->tail) ready_->tail->next_ = &work;
+    else ready_->head = &work;
+    ready_->tail = &work;
 }
 
 void snet::EventLoop::cancel_work(detail::LoopWork& work) noexcept
 {
     if (!work.pending_) return;
+    auto& queue = *work.queue_;
     if (work.prev_) work.prev_->next_ = work.next_;
-    else work_head_ = work.next_;
+    else queue.head = work.next_;
     if (work.next_) work.next_->prev_ = work.prev_;
-    else work_tail_ = work.prev_;
+    else queue.tail = work.prev_;
     work.prev_ = work.next_ = nullptr;
+    work.queue_ = nullptr;
     work.pending_ = false;
 }
 
 void snet::EventLoop::run_work()
 {
-    while (work_head_) {
-        auto* work = work_head_;
+    if (!phase_->head) std::swap(ready_, phase_);
+    const auto budget = work_budget_;
+    for (std::size_t count = 0; count < budget && phase_->head; ++count) {
+        auto* work = phase_->head;
         cancel_work(*work);
         work->executing_ = true;
         try { work->action_(); }

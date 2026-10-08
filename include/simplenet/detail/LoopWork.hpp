@@ -5,6 +5,7 @@
 namespace snet {
 class EventLoop;
 namespace detail {
+struct WorkQueue;
 
 // A prepared, single-threaded work registration. It must outlive its action;
 // moving/destroying the registration from inside the action is prohibited.
@@ -28,8 +29,13 @@ private:
     LoopWork* next_ = nullptr;
     LoopWork* all_prev_ = nullptr;
     LoopWork* all_next_ = nullptr;
+    WorkQueue* queue_ = nullptr;
     bool pending_ = false;
     bool executing_ = false;
+};
+struct WorkQueue {
+    LoopWork* head = nullptr;
+    LoopWork* tail = nullptr;
 };
 } // namespace detail
 } // namespace snet
