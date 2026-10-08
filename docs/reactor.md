@@ -210,3 +210,57 @@ is reported regardless of the requested mask. `EPOLLPRI` alone does not invoke
 callbacks; a custom loop can inspect it through `get_revents()`.
 The library does not validate mask combinations or provide
 separate guarantees for all combinations of `EPOLLET`, `EPOLLONESHOT`, and other flags.
+
+## Prepared work and deferred ownership
+
+`detail::LoopWork` is a stable-address registration for internal same-thread
+work. Construct it before dispatch and keep it alive until its action returns.
+`schedule()` coalesces repeated requests; `cancel()` and destruction unlink
+pending requests without allocating. Scheduling from its action is allowed,
+but does not repeat that action in the current work phase. Destroying or moving
+the executing registration is prohibited. The action is fixed at construction;
+an empty action is rejected.
+
+When work exists, EventLoop polls sockets with an effective zero timeout without
+changing `get_timeout()`. It dispatches the current socket batch, runs at most
+`get_work_budget()` prepared records (64 initially), and collects eligible retired
+objects. New work waits for another phase; unfinished older work stays ahead of
+newer requests. `set_work_budget(0)` throws without changing the budget.
+`iteration_id()` lets components share an I/O budget across socket dispatch and
+prepared work in the same iteration; compare ids only for equality.
+
+```cpp
+snet::EventLoop loop;
+snet::detail::LoopWork work(loop, [&] { /* internal action */ loop.quit(); });
+work.schedule();
+loop.loop(); // Executes even if there are no registered sockets.
+```
+
+Closing a socket and destroying its owner are separate operations. For deferred
+ownership, prepare a `RetirementSlot<T>` before activation. On closure, successfully
+remove its Channel before closing the fd, then transfer the slot and unique_ptr
+through `retire`. The slot is separate from T, so transfer allocates nothing and
+never moves T. Its internal `can_destroy(const T&) noexcept` hook verifies no
+executing callbacks or pending references remain; `cancel_pending(T&) noexcept`
+invalidates its internal jobs/notifications on exception or loop destruction.
+Hooks are library-internal cleanup operations: they must not call application
+callbacks, reenter loop, or mutate retirement ownership. T must have a noexcept
+destructor. Slots and prepared-work registrations cannot be copied or moved.
+
+A retired object waiting for its close notification remains alive until that
+notification finishes. Its owner has to provide the readiness/cancellation hooks;
+retire alone does not infer application lifetime. Destroying a retired owner from
+its callback is prohibited, even though retire from that callback is safe.
+
+`quit()` finishes the current socket batch, one bounded work phase and cleanup.
+It leaves unprocessed work for another `loop()`. An action exception is rethrown;
+the throwing invocation is consumed, executing flags are reset, and live work
+remains queued. Retired objects cancel remaining notifications after stack unwind
+and are collected when safe. A removed pending Channel is still skipped by the
+saved-batch continuation contract.
+
+Before destroying EventLoop, destroy every externally owned associated object
+and prepared registration, including unstarted ones. EventLoop cancels internal
+work, cancels owned retired objects' pending references, destroys those objects,
+and finally closes its Poller. It executes no work actions or application
+callbacks in its destructor. It does not wait for notification delivery there.

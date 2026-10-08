@@ -10,9 +10,15 @@ namespace detail {
 
 class RetirementEntry {
 public:
+    RetirementEntry(const RetirementEntry&) = delete;
+    RetirementEntry& operator=(const RetirementEntry&) = delete;
+    RetirementEntry(RetirementEntry&&) = delete;
+    RetirementEntry& operator=(RetirementEntry&&) = delete;
     virtual ~RetirementEntry() noexcept = default;
     virtual bool can_destroy() const noexcept = 0;
     virtual void cancel_pending() noexcept = 0;
+protected:
+    RetirementEntry() = default;
 private:
     friend class snet::EventLoop;
     RetirementEntry* next_ = nullptr;

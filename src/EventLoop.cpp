@@ -145,3 +145,16 @@ void snet::EventLoop::collect_retired() noexcept
         } else cursor = &entry->next_;
     }
 }
+
+snet::EventLoop::~EventLoop() noexcept
+{
+    assert(!looping_);
+    for (auto* work = all_work_; work; work = work->all_next_) cancel_work(*work);
+    for (auto* entry = retired_; entry; entry = entry->next_) entry->cancel_pending();
+    while (retired_) {
+        auto* entry = retired_;
+        retired_ = entry->next_;
+        delete entry;
+    }
+    assert(all_work_ == nullptr); // External registrations must not outlive the loop.
+}

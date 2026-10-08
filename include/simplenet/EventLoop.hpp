@@ -20,7 +20,8 @@ namespace snet
 /**
  * @brief A ready-to-use single-threaded event waiting and dispatch loop.
  *
- * Owns its Poller, but not channels or their fds. All operations and callbacks run
+ * Owns its Poller and retired objects; external channels and their fds remain
+ * the caller's responsibility. All operations and callbacks run
  * in one thread without synchronization. The Channel and Poller lifetime contract
  * applies: stable addresses, successful removal before destroying channels or
  * closing fds, and no destruction of a channel during its dispatch.
@@ -104,7 +105,8 @@ public:
      * @throws std::system_error Waiting failed in the internal Poller.
      * @throws std::bad_alloc Event batch preparation failed.
      * @note Callback exceptions propagate. On any exception, iteration stops and
-     *       execution flags are reset.
+     *       execution flags are reset; owned retired objects cancel pending work
+     *       and are collected when safe. Other live work remains queued.
      * @note After a callback exception, the next loop() resumes the saved batch
      *       at the next channel before waiting for new events. The channel that
      *       threw and its remaining callbacks are not retried. Removed channels
@@ -113,10 +115,17 @@ public:
      *       this continuation guarantee. Resuming dispatch does not restore
      *       application state changed by the failed callback.
      * @note Skips nullptr entries; finishes the current batch after quit().
-     *       Registrations survive exit and loop() may be called again.
+     *       Then runs one bounded prepared-work phase and collects eligible retired
+     *       objects. Remaining work survives exit; loop() may be called again.
      */
     void loop();
 
+    /// Cancels prepared work and frees retired ownership without executing actions.
+    /// All externally owned registrations/objects must already be destroyed.
+    ~EventLoop() noexcept;
+
+    /// Allocates an empty ownership slot before dispatch; hooks are internal,
+    /// noexcept, and must not call application callbacks or reenter the loop.
     template<class T>
     std::unique_ptr<detail::RetirementSlot<T>> prepare_retirement(
         bool (*can_destroy)(const T&) noexcept,
@@ -128,6 +137,8 @@ public:
             new detail::RetirementSlot<T>(*this, can_destroy, cancel_pending));
     }
 
+    /// Transfer a same-loop slot and unregistered object without allocation.
+    /// Non-null arguments and no further external owner are required.
     template<class T>
     void retire(std::unique_ptr<detail::RetirementSlot<T>> slot,
                 std::unique_ptr<T> object) noexcept
@@ -137,12 +148,13 @@ public:
         retire_erased(std::move(slot));
     }
 
+    /// Positive bound on prepared records serviced per iteration (default 64).
     void set_work_budget(std::size_t count);
     std::size_t get_work_budget() const noexcept { return work_budget_; }
     std::uint64_t iteration_id() const noexcept { return iteration_id_; }
 
     /**
-     * @brief Requests termination after the current event batch.
+     * @brief Requests termination after the current event batch, bounded work, and cleanup.
      * @pre Called in the same thread that runs loop().
      * @note Does not interrupt the callback, cancel remaining callbacks or channels
      *       in the batch, unregister channels, or close resources.

@@ -298,3 +298,40 @@ TEST(RetirementTest, ExceptionWithSavedBatch)
     if (first) loop.remove_channel(&first->channel);
     if (second) loop.remove_channel(&second->channel);
 }
+
+TEST(RetirementTest, LoopDestructionSkipsActions)
+{
+    bool destroyed = false;
+    int actions = 0, readiness_calls = 0;
+    struct Owned {
+        bool& destroyed;
+        int& readiness_calls;
+        snet::detail::LoopWork work;
+        Owned(snet::EventLoop& loop, bool& d, int& r, int& a)
+            : destroyed(d), readiness_calls(r), work(loop, [&a] { ++a; }) {}
+        ~Owned() noexcept { destroyed = true; }
+    };
+    {
+        snet::EventLoop loop;
+        auto owner = std::make_unique<Owned>(loop, destroyed, readiness_calls, actions);
+        auto slot = loop.prepare_retirement<Owned>(
+            [](const Owned& o) noexcept { ++o.readiness_calls; return false; },
+            [](Owned& o) noexcept { o.work.cancel(); });
+        owner->work.schedule();
+        loop.retire(std::move(slot), std::move(owner));
+    }
+    EXPECT_TRUE(destroyed);
+    EXPECT_EQ(actions, 0);
+    EXPECT_EQ(readiness_calls, 0);
+}
+
+TEST(RetirementTest, InvalidPreparationPreservesOwner)
+{
+    snet::EventLoop loop;
+    bool destroyed = false;
+    auto owner = std::make_unique<Probe>(loop, destroyed, [] {});
+    EXPECT_THROW(loop.prepare_retirement<Probe>(nullptr, cancel_probe), std::invalid_argument);
+    EXPECT_THROW(loop.prepare_retirement<Probe>(can_destroy_probe, nullptr), std::invalid_argument);
+    EXPECT_NE(owner.get(), nullptr);
+    EXPECT_FALSE(destroyed);
+}

@@ -80,3 +80,13 @@ You can explicitly disable Doxygen discovery:
 ```sh
 cmake -S . -B build -DSIMPLENET_BUILD_DOCS=OFF
 ```
+
+### Internal work and safe object lifetime
+
+EventLoop also supports prepared same-thread actions through `detail::LoopWork`
+and deferred ownership through `prepare_retirement<T>()` / `retire()`. This lets
+higher-level components schedule progress without a new socket event and retain
+closed objects until callbacks return. Work is bounded to 64 records per iteration
+by default; enqueue/cancel/ownership transfer allocate no new memory. These are
+component-building facilities, not a thread pool. See [the Reactor lifetime and
+work contract](docs/reactor.md#prepared-work-and-deferred-ownership).
