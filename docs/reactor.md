@@ -211,7 +211,7 @@ callbacks; a custom loop can inspect it through `get_revents()`.
 The library does not validate mask combinations or provide
 separate guarantees for all combinations of `EPOLLET`, `EPOLLONESHOT`, and other flags.
 
-## Prepared work and deferred ownership
+## Prepared work and owner cleanup
 
 `detail::LoopWork` is a stable-address registration for internal same-thread
 work. Construct it before dispatch and keep it alive until its action returns.
@@ -223,44 +223,71 @@ an empty action is rejected.
 
 When work exists, EventLoop polls sockets with an effective zero timeout without
 changing `get_timeout()`. It dispatches the current socket batch, runs at most
-`get_work_budget()` prepared records (64 initially), and collects eligible retired
-objects. New work waits for another phase; unfinished older work stays ahead of
-newer requests. `set_work_budget(0)` throws without changing the budget.
+`get_work_budget()` prepared records (64 initially), and calls registered owner
+cleanup hooks. New work waits for another phase; unfinished older work stays ahead
+of newer requests. `set_work_budget(0)` throws without changing the budget.
 `iteration_id()` lets components share an I/O budget across socket dispatch and
 prepared work in the same iteration; compare ids only for equality.
 
+Closing a socket and destroying its owner are separate operations. EventLoop does
+not own connections or accept object ownership. An owner keeps its `unique_ptr`
+until the object is unregistered, no handler is executing, and pending references
+are finished or canceled. A closed object with a pending close notification stays
+alive. Input/output buffer emptiness is not a destruction criterion: draining is
+part of the connection's shutdown policy, not generic owner cleanup.
+
+Register one `detail::LoopCleanup` per owner. Its fixed action has signature
+`void(void*, detail::CleanupReason) noexcept`, with a non-owning stable context.
+The owner can keep a list of marked closed candidates and process only those;
+EventLoop invokes owner hooks, never scans their connections. Registration and
+removal use embedded links without allocating. A null action throws
+`std::invalid_argument`; a null context is allowed when supported by the action.
+
 ```cpp
+struct CleanupState {
+    snet::EventLoop& loop;
+    int passes = 0;
+};
 snet::EventLoop loop;
-snet::detail::LoopWork work(loop, [&] { /* internal action */ loop.quit(); });
-work.schedule();
-loop.loop(); // Executes even if there are no registered sockets.
+CleanupState state{loop};
+snet::detail::LoopCleanup cleanup(loop, &state,
+    [](void* context, snet::detail::CleanupReason reason) noexcept {
+        auto& state = *static_cast<CleanupState*>(context);
+        // A real owner checks its marked objects here.
+        ++state.passes;
+        state.loop.quit();
+    });
+loop.request_cleanup();
+loop.loop(); // No socket event is required to reach the cleanup phase.
 ```
 
-Closing a socket and destroying its owner are separate operations. For deferred
-ownership, prepare a `RetirementSlot<T>` before activation. On closure, successfully
-remove its Channel before closing the fd, then transfer the slot and unique_ptr
-through `retire`. The slot is separate from T, so transfer allocates nothing and
-never moves T. Its internal `can_destroy(const T&) noexcept` hook verifies no
-executing callbacks or pending references remain; `cancel_pending(T&) noexcept`
-invalidates its internal jobs/notifications on exception or loop destruction.
-Hooks are library-internal cleanup operations: they must not call application
-callbacks, reenter loop, or mutate retirement ownership. T must have a noexcept
-destructor. Slots and prepared-work registrations cannot be copied or moved.
+`request_cleanup()` is nonthrowing and coalesces requests into a pending flag.
+It never invokes a hook synchronously. It forces an effective zero poll timeout
+until the next cleanup phase. The flag is consumed before hooks run, so a request
+from a hook survives for another iteration. Hooks run once per safe phase, after
+the entire current Channel batch and a bounded work phase, even if quit was
+requested. Hook order across owners is unspecified.
 
-A retired object waiting for its close notification remains alive until that
-notification finishes. Its owner has to provide the readiness/cancellation hooks;
-retire alone does not infer application lifetime. Destroying a retired owner from
-its callback is prohibited, even though retire from that callback is safe.
+After an exception unwinds the handler, hooks run with `CleanupReason::exception`
+before the original exception leaves loop(). Owners cancel references to their
+closed objects and remove those objects when safe. Live objects and their work
+are preserved. During normal completion the reason is `CleanupReason::normal`;
+owners retain objects that still require notifications. Throwing work invocations
+are not retried; removed pending Channels are skipped on saved-batch continuation.
 
-`quit()` finishes the current socket batch, one bounded work phase and cleanup.
-It leaves unprocessed work for another `loop()`. An action exception is rethrown;
-the throwing invocation is consumed, executing flags are reset, and live work
-remains queued. Retired objects cancel remaining notifications after stack unwind
-and are collected when safe. A removed pending Channel is still skipped by the
-saved-batch continuation contract.
+Hooks are internal lifecycle operations: they must not throw, invoke application
+callbacks, or reenter loop. They must not create or destroy cleanup registrations
+during a phase; construction is rejected with `std::logic_error`, and destruction
+violates a checked precondition. A hook may cancel object-local LoopWork and destroy
+unregistered owned objects after their handlers have unwound. It must not destroy
+its owner/registration. Owners must avoid repeatedly requesting phases without
+progress: a deliberate repeated request causes nonblocking polling.
 
-Before destroying EventLoop, destroy every externally owned associated object
-and prepared registration, including unstarted ones. EventLoop cancels internal
-work, cancels owned retired objects' pending references, destroys those objects,
-and finally closes its Poller. It executes no work actions or application
-callbacks in its destructor. It does not wait for notification delivery there.
+Before destroying EventLoop, destroy all external owners and their work/cleanup
+registrations, including unstarted ones. Owners unregister Channels, close fds,
+cancel work and destroy their objects outside their own callbacks. Neither owner
+destruction nor EventLoop destruction delivers application notifications.
+EventLoop's destructor invokes no work action or cleanup hook, destroys no external
+object, and closes only its Poller; debug assertions diagnose surviving
+registrations. `TcpServer::stop` will stop service without destroying the server;
+the server owner must wait for its callbacks/cleanup to return before destruction.

@@ -83,10 +83,11 @@ cmake -S . -B build -DSIMPLENET_BUILD_DOCS=OFF
 
 ### Internal work and safe object lifetime
 
-EventLoop also supports prepared same-thread actions through `detail::LoopWork`
-and deferred ownership through `prepare_retirement<T>()` / `retire()`. This lets
-higher-level components schedule progress without a new socket event and retain
-closed objects until callbacks return. Work is bounded to 64 records per iteration
-by default; enqueue/cancel/ownership transfer allocate no new memory. These are
+EventLoop supports prepared same-thread actions through `detail::LoopWork` and
+safe owner cleanup through `detail::LoopCleanup` / `request_cleanup()`. Owners keep
+their objects and `unique_ptr`s; the loop supplies a safe phase after dispatch or
+handler unwind. Cleanup hooks never run in the loop destructor and must not invoke
+application callbacks. Work is bounded to 64 records per iteration by default;
+prepared enqueue/cancel/cleanup requests allocate no new memory. These are
 component-building facilities, not a thread pool. See [the Reactor lifetime and
-work contract](docs/reactor.md#prepared-work-and-deferred-ownership).
+cleanup contract](docs/reactor.md#prepared-work-and-owner-cleanup).

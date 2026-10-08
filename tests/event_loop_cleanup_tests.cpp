@@ -414,3 +414,108 @@ TEST(OwnerCleanupTest, OtherOwnerRemainsAliveAfterException)
     loop.loop();
     EXPECT_EQ(live_calls, 1);
 }
+
+TEST(OwnerCleanupTest, UnregistersBeforeFdReuse)
+{
+    snet::EventLoop loop;
+    std::array<bool, 2> destroyed{false, false};
+    OwnerFixture owner(loop);
+    for (int i = 0; i < 2; ++i)
+        owner.objects[i] = std::make_unique<Probe>(loop, destroyed[i], [] {});
+    bool handled = false;
+    int stale_calls = 0, new_calls = 0;
+    std::unique_ptr<Fd> replacement_fd;
+    std::unique_ptr<snet::Channel> replacement;
+    auto handle = [&](Probe *current) {
+        if (handled) {
+            ++stale_calls;
+            return;
+        }
+        handled = true;
+        Probe *victim = current == owner.objects[0].get() ? owner.objects[1].get() : owner.objects[0].get();
+        const int reused_fd = victim->fd.get();
+        owner.close(*current);
+        owner.close(*victim);
+        const int source = eventfd(1, EFD_NONBLOCK | EFD_CLOEXEC);
+        ASSERT_GE(source, 0);
+        if (source != reused_fd) {
+            ASSERT_EQ(dup2(source, reused_fd), reused_fd);
+            close(source);
+        }
+        replacement_fd = std::make_unique<Fd>(reused_fd);
+        replacement = std::make_unique<snet::Channel>(reused_fd);
+        replacement->set_events(EPOLLIN);
+        replacement->set_read_callback([&] {
+            ++new_calls;
+            loop.quit();
+        });
+        loop.update_channel(replacement.get());
+        loop.quit();
+    };
+    for (auto &object : owner.objects) {
+        auto *raw = object.get();
+        raw->channel.set_read_callback([&, raw] { handle(raw); });
+        owner.activate(*raw);
+    }
+    loop.loop();
+    EXPECT_TRUE(destroyed[0]);
+    EXPECT_TRUE(destroyed[1]);
+    EXPECT_EQ(stale_calls, 0);
+    EXPECT_EQ(new_calls, 0);
+    loop.loop();
+    EXPECT_EQ(new_calls, 1);
+    loop.remove_channel(replacement.get());
+}
+
+TEST(LoopCleanupTest, NullContextSupported)
+{
+    snet::EventLoop loop;
+    static int calls = 0;
+    calls = 0;
+    LoopCleanup cleanup(loop, nullptr, [](void *context, CleanupReason reason) noexcept {
+        EXPECT_EQ(context, nullptr);
+        EXPECT_EQ(reason, CleanupReason::normal);
+        ++calls;
+    });
+    snet::detail::LoopWork stop(loop, [&] { loop.quit(); });
+    stop.schedule();
+    loop.loop();
+    EXPECT_EQ(calls, 1);
+}
+
+TEST(LoopCleanupTest, UnlinksHeadMiddleAndTail)
+{
+    snet::EventLoop loop;
+    std::array<int, 4> calls{};
+    std::array<CleanupContext, 4> contexts;
+    std::array<std::unique_ptr<LoopCleanup>, 4> registrations;
+    for (int i = 0; i < 4; ++i) {
+        contexts[i].action = [&, i](CleanupReason) { ++calls[i]; };
+        registrations[i] = std::make_unique<LoopCleanup>(loop, &contexts[i], CleanupContext::invoke);
+    }
+    registrations[2].reset(); // middle
+    registrations[0].reset(); // tail
+    registrations[3].reset(); // head
+    snet::detail::LoopWork stop(loop, [&] { loop.quit(); });
+    stop.schedule();
+    loop.loop();
+    EXPECT_EQ(calls, (std::array<int, 4>{0, 1, 0, 0}));
+}
+
+TEST(LoopCleanupTest, ReentryDuringCleanupRejected)
+{
+    snet::EventLoop loop;
+    int rejected = 0;
+    CleanupContext context{[&](CleanupReason) {
+        try {
+            loop.loop();
+        } catch (const std::logic_error &) {
+            ++rejected;
+        }
+        loop.quit();
+    }};
+    LoopCleanup cleanup(loop, &context, CleanupContext::invoke);
+    loop.request_cleanup();
+    loop.loop();
+    EXPECT_EQ(rejected, 1);
+}

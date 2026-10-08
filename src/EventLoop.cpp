@@ -46,14 +46,10 @@ void snet::EventLoop::loop()
             next_channel_ = 0;
             run_work();
             run_cleanup(detail::CleanupReason::normal);
-            collect_retired();
         }
 
     } catch (...) {
         run_cleanup(detail::CleanupReason::exception);
-        for (auto *entry = retired_; entry; entry = entry->next_)
-            entry->cancel_pending();
-        collect_retired();
         running_ = false;
         looping_ = false;
         throw;
@@ -124,38 +120,13 @@ void snet::EventLoop::run_work()
     }
 }
 
-void snet::EventLoop::retire_erased(std::unique_ptr<detail::RetirementEntry> entry) noexcept
-{
-    entry->next_ = retired_;
-    retired_ = entry.release();
-}
-
-void snet::EventLoop::collect_retired() noexcept
-{
-    auto **cursor = &retired_;
-    while (*cursor) {
-        auto *entry = *cursor;
-        if (entry->can_destroy()) {
-            *cursor = entry->next_;
-            delete entry;
-        } else
-            cursor = &entry->next_;
-    }
-}
-
 snet::EventLoop::~EventLoop() noexcept
 {
     assert(!looping_);
-    for (auto *work = all_work_; work; work = work->all_next_)
-        cancel_work(*work);
-    for (auto *entry = retired_; entry; entry = entry->next_)
-        entry->cancel_pending();
-    while (retired_) {
-        auto *entry = retired_;
-        retired_ = entry->next_;
-        delete entry;
-    }
-    assert(all_work_ == nullptr); // External registrations must not outlive the loop.
+    assert(!cleaning_);
+    // Registrations are external; their owners must destroy them before the loop.
+    assert(all_work_ == nullptr);
+    assert(cleanup_head_ == nullptr);
 }
 
 void snet::EventLoop::request_cleanup() noexcept { cleanup_requested_ = true; }

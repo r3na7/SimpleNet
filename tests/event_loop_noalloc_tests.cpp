@@ -71,26 +71,41 @@ void operator delete[](void *p, const std::nothrow_t &) noexcept { std::free(p);
 void operator delete(void *p, std::align_val_t, const std::nothrow_t &) noexcept { std::free(p); }
 void operator delete[](void *p, std::align_val_t, const std::nothrow_t &) noexcept { std::free(p); }
 
-TEST(LoopAllocationTest, PreparedOperationsDoNotAllocate)
+TEST(LoopAllocationTest, PreparedOwnerCleanupDoesNotAllocate)
 {
     bool destroyed = false;
     struct Owned {
         bool &d;
         ~Owned() noexcept { d = true; }
     };
+    struct Owner {
+        snet::EventLoop &loop;
+        std::unique_ptr<Owned> object;
+        bool cleaned = false;
+    };
     auto loop = std::make_unique<snet::EventLoop>();
     auto work = std::make_unique<snet::detail::LoopWork>(*loop, [] {});
-    auto owner = std::make_unique<Owned>(destroyed);
-    auto slot = loop->prepare_retirement<Owned>([](const Owned &) noexcept { return true; }, [](Owned &) noexcept {});
+    Owner owner{*loop, std::make_unique<Owned>(destroyed)};
+    auto cleanup = std::make_unique<snet::detail::LoopCleanup>(
+        *loop, &owner, [](void *context, snet::detail::CleanupReason reason) noexcept {
+            auto &owner = *static_cast<Owner *>(context);
+            owner.cleaned = reason == snet::detail::CleanupReason::normal;
+            owner.object.reset();
+            owner.loop.quit();
+        });
     allocations = 0;
     measuring = true;
     work->schedule();
     work->schedule();
     work->cancel();
     work.reset();
-    loop->retire(std::move(slot), std::move(owner));
+    loop->request_cleanup();
+    loop->request_cleanup();
+    loop->loop();
+    cleanup.reset();
     loop.reset();
     measuring = false;
     EXPECT_EQ(allocations, 0u);
     EXPECT_TRUE(destroyed);
+    EXPECT_TRUE(owner.cleaned);
 }

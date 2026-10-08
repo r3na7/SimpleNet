@@ -8,12 +8,8 @@
 #include "Poller.hpp"
 #include "detail/LoopCleanup.hpp"
 #include "detail/LoopWork.hpp"
-#include "detail/Retirement.hpp"
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
-#include <stdexcept>
 
 namespace snet
 {
@@ -21,7 +17,7 @@ namespace snet
 /**
  * @brief A ready-to-use single-threaded event waiting and dispatch loop.
  *
- * Owns its Poller and retired objects; external channels and their fds remain
+ * Owns only its Poller; channels, their fds, and cleanup owners remain
  * the caller's responsibility. All operations and callbacks run
  * in one thread without synchronization. The Channel and Poller lifetime contract
  * applies: stable addresses, successful removal before destroying channels or
@@ -106,8 +102,8 @@ public:
      * @throws std::system_error Waiting failed in the internal Poller.
      * @throws std::bad_alloc Event batch preparation failed.
      * @note Callback exceptions propagate. On any exception, iteration stops and
-     *       execution flags are reset; owned retired objects cancel pending work
-     *       and are collected when safe. Other live work remains queued.
+     *       execution flags are reset. After handler unwind, nonthrowing owner cleanup
+     *       hooks run with CleanupReason::exception. Other live work remains queued.
      * @note After a callback exception, the next loop() resumes the saved batch
      *       at the next channel before waiting for new events. The channel that
      *       threw and its remaining callbacks are not retried. Removed channels
@@ -116,49 +112,14 @@ public:
      *       this continuation guarantee. Resuming dispatch does not restore
      *       application state changed by the failed callback.
      * @note Skips nullptr entries; finishes the current batch after quit().
-     *       Then runs one bounded prepared-work phase and collects eligible retired
-     *       objects. Remaining work survives exit; loop() may be called again.
+     *       Then runs one bounded prepared-work phase and nonthrowing owner cleanup
+     *       hooks with CleanupReason::normal. Remaining work survives exit; loop() may be called again.
      */
     void loop();
 
-    /// Cancels prepared work and frees retired ownership without executing actions.
-    /// All externally owned registrations/objects must already be destroyed.
+    /// @brief Destroys only the Poller; work actions and owner hooks are never invoked.
+    /// @pre All work/cleanup registrations and associated owners have already been destroyed.
     ~EventLoop() noexcept;
-
-    /**
-     * @brief Allocates an empty ownership slot before dispatch.
-     * @tparam T An object type with a noexcept destructor.
-     * @param can_destroy Internal hook checking that no executing/pending references remain.
-     * @param cancel_pending Internal hook canceling object-local work/notifications.
-     * @return An empty stable-address slot belonging to this loop.
-     * @throws std::invalid_argument Either hook is null.
-     * @throws std::bad_alloc Slot allocation failed.
-     * @pre Hooks do not invoke application callbacks, reenter loop, or mutate retirement.
-     */
-    template <class T>
-    std::unique_ptr<detail::RetirementSlot<T>> prepare_retirement(bool (*can_destroy)(const T &) noexcept,
-                                                                  void (*cancel_pending)(T &) noexcept)
-    {
-        if (!can_destroy || !cancel_pending)
-            throw std::invalid_argument("Retirement hooks must not be empty");
-        return std::unique_ptr<detail::RetirementSlot<T>>(
-            new detail::RetirementSlot<T>(*this, can_destroy, cancel_pending));
-    }
-
-    /**
-     * @brief Transfers prepared ownership without allocating or moving the object.
-     * @tparam T The type of the owned object.
-     * @param slot An empty non-null slot prepared by this loop.
-     * @param object A non-null unique owner transferred exactly once.
-     * @pre All Channels in the object are successfully unregistered.
-     * @note Collection waits until dispatch has unwound and the internal readiness hook allows it.
-     */
-    template <class T> void retire(std::unique_ptr<detail::RetirementSlot<T>> slot, std::unique_ptr<T> object) noexcept
-    {
-        assert(slot && object && slot->loop_ == this && !slot->object_);
-        slot->object_ = std::move(object);
-        retire_erased(std::move(slot));
-    }
 
     /**
      * @brief Changes the bound on prepared records serviced per iteration.
@@ -198,9 +159,6 @@ private:
     void schedule_work(detail::LoopWork &work) noexcept;
     void cancel_work(detail::LoopWork &work) noexcept;
     void run_work();
-    void retire_erased(std::unique_ptr<detail::RetirementEntry> entry) noexcept;
-    void collect_retired() noexcept;
-    detail::RetirementEntry *retired_ = nullptr;
     detail::WorkQueue queues_[2];
     detail::WorkQueue *ready_ = &queues_[0];
     detail::WorkQueue *phase_ = &queues_[1];
