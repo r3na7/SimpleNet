@@ -29,3 +29,7 @@ gtest_discover_tests(simplenet_event_loop_noalloc_tests TEST_PREFIX loopalloc. P
 add_executable(simplenet_event_loop_cleanup_tests event_loop_cleanup_tests.cpp)
 target_link_libraries(simplenet_event_loop_cleanup_tests PRIVATE SimpleNet GTest::gtest_main)
 gtest_discover_tests(simplenet_event_loop_cleanup_tests TEST_PREFIX loopcleanup. PROPERTIES TIMEOUT 10)
+
+add_executable(simplenet_socket_tests socket_tests.cpp)
+target_link_libraries(simplenet_socket_tests PRIVATE SimpleNet GTest::gtest_main)
+gtest_discover_tests(simplenet_socket_tests TEST_PREFIX socket. PROPERTIES TIMEOUT 10)

@@ -7,6 +7,7 @@ project(
 )
 
 add_library(SimpleNet STATIC
+    src/Socket.cpp
     src/Address.cpp
     src/Channel.cpp
     src/Poller.cpp
