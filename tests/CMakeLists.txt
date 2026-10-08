@@ -17,3 +17,7 @@ gtest_discover_tests(simplenet_reactor_tests
     TEST_PREFIX reactor.
     PROPERTIES TIMEOUT 10
 )
+
+add_executable(simplenet_event_loop_work_tests event_loop_work_tests.cpp)
+target_link_libraries(simplenet_event_loop_work_tests PRIVATE SimpleNet GTest::gtest_main)
+gtest_discover_tests(simplenet_event_loop_work_tests TEST_PREFIX loopwork. PROPERTIES TIMEOUT 10)

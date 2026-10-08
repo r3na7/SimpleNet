@@ -70,7 +70,12 @@ void snet::Poller::remove_channel(snet::Channel *channel)
 
 const std::vector<snet::Channel *> &snet::Poller::poll()
 {
-    int num_events = epoll_wait(epoll_fd_, events_.data(), max_events_, timeout_);
+    return poll_with_timeout(timeout_);
+}
+
+const std::vector<snet::Channel *> &snet::Poller::poll_with_timeout(int timeout)
+{
+    int num_events = epoll_wait(epoll_fd_, events_.data(), max_events_, timeout);
 
     if (num_events == -1) {
 

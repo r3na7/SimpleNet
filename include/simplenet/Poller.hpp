@@ -140,6 +140,9 @@ public:
     ~Poller();
 
 private:
+    friend class EventLoop;
+    const std::vector<Channel*>& poll_with_timeout(int timeout);
+
     void add_channel(snet::Channel *channel);
 
     void modify_channel(snet::Channel *channel);

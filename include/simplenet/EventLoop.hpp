@@ -6,6 +6,7 @@
  */
 
 #include "Poller.hpp"
+#include "detail/LoopWork.hpp"
 
 namespace snet
 {
@@ -121,6 +122,13 @@ public:
     void quit();
 
 private:
+    friend class detail::LoopWork;
+    void schedule_work(detail::LoopWork& work) noexcept;
+    void cancel_work(detail::LoopWork& work) noexcept;
+    void run_work();
+    detail::LoopWork* work_head_ = nullptr;
+    detail::LoopWork* work_tail_ = nullptr;
+    detail::LoopWork* all_work_ = nullptr;
     Poller poller_;
 
     const std::vector<Channel *> *pending_batch_ = nullptr;
