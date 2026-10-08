@@ -7,12 +7,12 @@
 
 #include "Poller.hpp"
 #include "detail/LoopWork.hpp"
+#include "detail/Retirement.hpp"
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <cassert>
 #include <memory>
 #include <stdexcept>
-#include "detail/Retirement.hpp"
 
 namespace snet
 {
@@ -134,10 +134,9 @@ public:
      * @throws std::bad_alloc Slot allocation failed.
      * @pre Hooks do not invoke application callbacks, reenter loop, or mutate retirement.
      */
-    template<class T>
-    std::unique_ptr<detail::RetirementSlot<T>> prepare_retirement(
-        bool (*can_destroy)(const T&) noexcept,
-        void (*cancel_pending)(T&) noexcept)
+    template <class T>
+    std::unique_ptr<detail::RetirementSlot<T>> prepare_retirement(bool (*can_destroy)(const T &) noexcept,
+                                                                  void (*cancel_pending)(T &) noexcept)
     {
         if (!can_destroy || !cancel_pending)
             throw std::invalid_argument("Retirement hooks must not be empty");
@@ -153,9 +152,7 @@ public:
      * @pre All Channels in the object are successfully unregistered.
      * @note Collection waits until dispatch has unwound and the internal readiness hook allows it.
      */
-    template<class T>
-    void retire(std::unique_ptr<detail::RetirementSlot<T>> slot,
-                std::unique_ptr<T> object) noexcept
+    template <class T> void retire(std::unique_ptr<detail::RetirementSlot<T>> slot, std::unique_ptr<T> object) noexcept
     {
         assert(slot && object && slot->loop_ == this && !slot->object_);
         slot->object_ = std::move(object);
@@ -188,18 +185,18 @@ public:
 
 private:
     friend class detail::LoopWork;
-    void schedule_work(detail::LoopWork& work) noexcept;
-    void cancel_work(detail::LoopWork& work) noexcept;
+    void schedule_work(detail::LoopWork &work) noexcept;
+    void cancel_work(detail::LoopWork &work) noexcept;
     void run_work();
     void retire_erased(std::unique_ptr<detail::RetirementEntry> entry) noexcept;
     void collect_retired() noexcept;
-    detail::RetirementEntry* retired_ = nullptr;
+    detail::RetirementEntry *retired_ = nullptr;
     detail::WorkQueue queues_[2];
-    detail::WorkQueue* ready_ = &queues_[0];
-    detail::WorkQueue* phase_ = &queues_[1];
+    detail::WorkQueue *ready_ = &queues_[0];
+    detail::WorkQueue *phase_ = &queues_[1];
     std::size_t work_budget_ = 64;
     std::uint64_t iteration_id_ = 0;
-    detail::LoopWork* all_work_ = nullptr;
+    detail::LoopWork *all_work_ = nullptr;
     Poller poller_;
 
     const std::vector<Channel *> *pending_batch_ = nullptr;

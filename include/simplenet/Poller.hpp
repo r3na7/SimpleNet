@@ -141,7 +141,7 @@ public:
 
 private:
     friend class EventLoop;
-    const std::vector<Channel*>& poll_with_timeout(int timeout);
+    const std::vector<Channel *> &poll_with_timeout(int timeout);
 
     void add_channel(snet::Channel *channel);
 

@@ -68,10 +68,7 @@ void snet::Poller::remove_channel(snet::Channel *channel)
     }
 }
 
-const std::vector<snet::Channel *> &snet::Poller::poll()
-{
-    return poll_with_timeout(timeout_);
-}
+const std::vector<snet::Channel *> &snet::Poller::poll() { return poll_with_timeout(timeout_); }
 
 const std::vector<snet::Channel *> &snet::Poller::poll_with_timeout(int timeout)
 {

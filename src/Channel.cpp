@@ -10,14 +10,10 @@ namespace
 {
 
 // Used only for bool and pointer state; restores the previous value on all exits.
-template <typename T>
-class ScopedValue
+template <typename T> class ScopedValue
 {
 public:
-    ScopedValue(T &value, T replacement) noexcept : value_(value), previous_(value)
-    {
-        value_ = replacement;
-    }
+    ScopedValue(T &value, T replacement) noexcept : value_(value), previous_(value) { value_ = replacement; }
 
     ~ScopedValue() noexcept { value_ = previous_; }
 
