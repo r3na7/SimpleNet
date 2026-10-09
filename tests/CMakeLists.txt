@@ -82,5 +82,5 @@ gtest_discover_tests(simplenet_tcp_server_tests TEST_PREFIX server. PROPERTIES T
 
 add_executable(simplenet_tcp_server_syscall_tests tcp_server_syscall_tests.cpp)
 target_link_libraries(simplenet_tcp_server_syscall_tests PRIVATE SimpleNet GTest::gtest_main)
-target_link_options(simplenet_tcp_server_syscall_tests PRIVATE -Wl,--wrap=epoll_ctl -Wl,--wrap=accept4)
+target_link_options(simplenet_tcp_server_syscall_tests PRIVATE -Wl,--wrap=epoll_ctl -Wl,--wrap=accept4 -Wl,--wrap=epoll_wait)
 gtest_discover_tests(simplenet_tcp_server_syscall_tests TEST_PREFIX serversys. PROPERTIES TIMEOUT 10)

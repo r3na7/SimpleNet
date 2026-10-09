@@ -302,3 +302,231 @@ TEST(TcpServerTest, DestructorClosesActiveAndCancelsNotifications)
     accept_test::once(loop);
     EXPECT_EQ(closed, 0);
 }
+
+TEST(TcpServerTest, ConfigurationThrowClosesAndRemovesOnlyNewOwner)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    std::weak_ptr<int> weak;
+    int closed = 0;
+    server.on_connection([&](auto &connection) {
+        auto token = std::make_shared<int>(0);
+        weak = token;
+        connection.on_closed([&, token](auto &, std::error_code) { ++closed; });
+        throw std::runtime_error("configuration");
+    });
+    server.start();
+    auto peer = listener.connect();
+    EXPECT_THROW(accept_test::once(loop), std::runtime_error);
+    EXPECT_TRUE(weak.expired());
+    EXPECT_EQ(closed, 0);
+}
+TEST(TcpServerTest, DataCloseThenThrowRemovesAfterUnwind)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    std::weak_ptr<int> weak;
+    int closed = 0;
+    server.on_connection([&](auto &connection) {
+        auto token = std::make_shared<int>(0);
+        weak = token;
+        connection.on_data([&, token](auto &current) {
+            current.close();
+            EXPECT_FALSE(weak.expired());
+            throw std::runtime_error("data");
+        });
+        connection.on_closed([&](auto &, std::error_code) { ++closed; });
+    });
+    server.start();
+    auto peer = listener.connect();
+    tcp_test::drive(loop, [&] { return !weak.expired(); });
+    ASSERT_EQ(::send(peer.get_fd(), "q", 1, MSG_NOSIGNAL), 1);
+    EXPECT_THROW(accept_test::once(loop), std::runtime_error);
+    EXPECT_TRUE(weak.expired());
+    EXPECT_EQ(closed, 0);
+}
+TEST(TcpServerTest, ThrowingClosedIsNotRetriedAndOwnerRemoved)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    std::weak_ptr<int> weak;
+    int closed = 0;
+    server.on_connection([&](auto &connection) {
+        auto token = std::make_shared<int>(0);
+        weak = token;
+        connection.on_closed([&, token](auto &, std::error_code) {
+            ++closed;
+            throw std::runtime_error("closed");
+        });
+        connection.close();
+    });
+    server.start();
+    auto peer = listener.connect();
+    EXPECT_THROW(accept_test::once(loop), std::runtime_error);
+    EXPECT_TRUE(weak.expired());
+    EXPECT_EQ(closed, 1);
+    accept_test::once(loop);
+    EXPECT_EQ(closed, 1);
+}
+TEST(TcpServerTest, UnrelatedExceptionCancelsClosedButPreservesLiveOutput)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    int configured = 0, closed = 0;
+    snet::TcpConnection *live = nullptr;
+    std::weak_ptr<int> weak;
+    server.on_connection([&](auto &connection) {
+        if (++configured == 1) {
+            auto token = std::make_shared<int>(0);
+            weak = token;
+            connection.on_closed([&, token](auto &, std::error_code) { ++closed; });
+            connection.close();
+        } else
+            live = &connection;
+    });
+    server.start();
+    auto a = listener.connect(), b = listener.connect();
+    snet::detail::LoopWork fail(loop, [] { throw std::runtime_error("unrelated"); });
+    fail.schedule();
+    EXPECT_THROW(loop.loop(), std::runtime_error);
+    EXPECT_EQ(configured, 2);
+    EXPECT_TRUE(weak.expired());
+    EXPECT_EQ(closed, 0);
+    ASSERT_NE(live, nullptr);
+    EXPECT_EQ(live->send(tcp_test::bytes("live")).status, snet::SendStatus::accepted);
+    std::string reply;
+    tcp_test::drive(loop, [&] {
+        reply += peer_read(b);
+        return reply == "live";
+    });
+}
+TEST(TcpServerTest, QuitAndSmallWorkBudgetRetainPendingOwners)
+{
+    snet::EventLoop loop;
+    loop.set_work_budget(1);
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    std::vector<std::weak_ptr<int>> lifetimes;
+    int closed = 0;
+    server.on_connection([&](auto &connection) {
+        auto token = std::make_shared<int>(0);
+        lifetimes.push_back(token);
+        connection.on_closed([&, token](auto &, std::error_code) { ++closed; });
+        connection.close();
+    });
+    server.start();
+    std::vector<snet::Socket> peers;
+    for (int i = 0; i < 6; ++i)
+        peers.push_back(listener.connect());
+    accept_test::once(loop);
+    ASSERT_EQ(lifetimes.size(), 6u);
+    EXPECT_EQ(closed, 0);
+    for (auto &weak : lifetimes)
+        EXPECT_FALSE(weak.expired());
+    tcp_test::drive(loop, [&] { return closed == 6; });
+    for (auto &weak : lifetimes)
+        EXPECT_TRUE(weak.expired());
+}
+TEST(TcpServerTest, ClosedCallbackClosesAnotherWithoutNestedNotification)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    std::vector<snet::TcpConnection *> connections;
+    std::vector<std::weak_ptr<int>> lifetimes;
+    int closed = 0;
+    bool inside = false;
+    server.on_connection([&](auto &connection) {
+        connections.push_back(&connection);
+        auto token = std::make_shared<int>(0);
+        lifetimes.push_back(token);
+        const int index = static_cast<int>(connections.size());
+        connection.on_closed([&, token, index](auto &, std::error_code) {
+            EXPECT_FALSE(inside);
+            inside = true;
+            ++closed;
+            if (index == 1) {
+                connections[1]->close();
+                EXPECT_EQ(closed, 1);
+            }
+            inside = false;
+        });
+    });
+    server.start();
+    auto a = listener.connect(), b = listener.connect();
+    tcp_test::drive(loop, [&] { return connections.size() == 2; });
+    connections[0]->close();
+    tcp_test::drive(loop, [&] { return closed == 2; });
+    for (auto &weak : lifetimes)
+        EXPECT_TRUE(weak.expired());
+}
+TEST(TcpServerTest, DestructorWithPendingCloseCallsNothing)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    std::weak_ptr<int> weak;
+    int configured = 0, closed = 0;
+    auto server = std::make_unique<snet::TcpServer>(loop, std::move(listener.socket));
+    server->on_connection([&](auto &connection) {
+        ++configured;
+        auto token = std::make_shared<int>(0);
+        weak = token;
+        connection.on_closed([&, token](auto &, std::error_code) { ++closed; });
+        connection.close();
+    });
+    loop.set_work_budget(1);
+    server->start();
+    auto peer = listener.connect();
+    accept_test::once(loop);
+    EXPECT_EQ(configured, 1);
+    EXPECT_EQ(closed, 0);
+    EXPECT_FALSE(weak.expired());
+    server.reset();
+    EXPECT_TRUE(weak.expired());
+    accept_test::once(loop);
+    EXPECT_EQ(closed, 0);
+}
+TEST(TcpServerTest, StableEntriesAcrossRehash)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    std::vector<snet::TcpConnection *> addresses;
+    std::vector<std::weak_ptr<int>> lifetimes;
+    std::vector<snet::Socket> peers;
+    server.on_connection([&](auto &connection) {
+        addresses.push_back(&connection);
+        auto token = std::make_shared<int>(0);
+        lifetimes.push_back(token);
+        auto *original = &connection;
+        connection.on_data([original, token](auto &current) {
+            EXPECT_EQ(&current, original);
+            auto result = current.send(current.input_data());
+            current.consume_input(result.accepted_bytes);
+        });
+    });
+    server.start();
+    for (int batch = 0; batch < 32; ++batch) {
+        for (int i = 0; i < 16; ++i)
+            peers.push_back(listener.connect());
+        tcp_test::drive(loop, [&] { return addresses.size() == peers.size(); });
+    }
+    ASSERT_EQ(addresses.size(), 512u);
+    for (std::size_t i : {0u, 31u, 255u, 511u})
+        addresses[i]->close();
+    tcp_test::drive(loop, [&] {
+        return lifetimes[0].expired() && lifetimes[31].expired() && lifetimes[255].expired() &&
+               lifetimes[511].expired();
+    });
+    EXPECT_FALSE(lifetimes[1].expired());
+    ASSERT_EQ(::send(peers[1].get_fd(), "x", 1, MSG_NOSIGNAL), 1);
+    std::string reply;
+    tcp_test::drive(loop, [&] {
+        reply += peer_read(peers[1]);
+        return reply == "x";
+    });
+}

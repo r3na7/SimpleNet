@@ -75,9 +75,14 @@ void snet::TcpServer::accept(Socket socket)
     auto &client = *entry.connection;
     client.owner_context_ = &entry;
     client.owner_closed_ = &TcpServer::mark_closed;
-    connection_callback_(client);
-    if (client.state_ != TcpConnection::State::closed)
-        client.start();
+    try {
+        connection_callback_(client);
+        if (client.state_ != TcpConnection::State::closed)
+            client.start();
+    } catch (...) {
+        client.close();
+        throw;
+    }
 }
 void snet::TcpServer::cleanup_entry(void *context, detail::CleanupReason reason) noexcept
 {
@@ -93,10 +98,12 @@ void snet::TcpServer::mark_closed(void *context, TcpConnection &connection) noex
     entry.next_closed = entry.server->closed_;
     entry.server->closed_ = &entry;
 }
-void snet::TcpServer::cleanup(detail::CleanupReason) noexcept
+void snet::TcpServer::cleanup(detail::CleanupReason reason) noexcept
 {
     auto **link = &closed_;
     while (auto *entry = *link) {
+        if (reason == detail::CleanupReason::exception)
+            entry->connection->cancel_closed_work();
         if (!entry->connection->ready_for_cleanup()) {
             link = &entry->next_closed;
             continue;
