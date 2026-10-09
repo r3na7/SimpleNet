@@ -543,3 +543,323 @@ TEST(TcpConnectionTest, OnDataCloseSuppressesEof)
     tcp_test::drive(loop, [&] { return closed == 1; });
     EXPECT_EQ(eof, 0);
 }
+
+TEST(TcpConnectionTest, SelfReplaceDataKeepsOldCallableAlive)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    auto token = std::make_shared<int>(1);
+    std::weak_ptr<int> lifetime = token;
+    int first = 0, second = 0;
+    connection.on_data([&, token](auto &current) {
+        ++first;
+        current.consume_input(current.input_data().size());
+        current.on_data([&](auto &) { ++second; });
+        EXPECT_FALSE(lifetime.expired());
+    });
+    token.reset();
+    connection.start();
+    pair.send("one");
+    tcp_test::drive(loop, [&] { return first == 1; });
+    EXPECT_TRUE(lifetime.expired());
+    pair.send("two");
+    tcp_test::drive(loop, [&] { return second == 1; });
+    EXPECT_EQ(first, 1);
+}
+
+TEST(TcpConnectionTest, SelfClearDataPreventsLaterCalls)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    int calls = 0;
+    connection.on_data([&](auto &current) {
+        ++calls;
+        current.on_data({});
+    });
+    connection.start();
+    pair.send("one");
+    tcp_test::drive(loop, [&] { return calls == 1; });
+    pair.send("two");
+    tcp_test::drive(loop, [&] { return connection.input_data().size() == 6; });
+    EXPECT_EQ(calls, 1);
+}
+
+TEST(TcpConnectionTest, ReplaceLaterEofAndNoReplay)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    int old = 0, next = 0;
+    connection.on_eof([&](auto &) { ++old; });
+    connection.on_data([&](auto &current) {
+        current.on_eof([&](auto &self) {
+            ++next;
+            self.on_eof([&](auto &) { ++old; });
+        });
+    });
+    connection.start();
+    pair.send("end");
+    tcp_test::check(::shutdown(pair.peer.get_fd(), SHUT_WR), "shutdown");
+    tcp_test::drive(loop, [&] { return next == 1; });
+    snet::detail::LoopWork stop(loop, [&] { loop.quit(); });
+    stop.schedule();
+    loop.loop();
+    EXPECT_EQ(old, 0);
+}
+
+TEST(TcpConnectionTest, InstallClosedAfterCloseAndNoReplay)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    connection.close();
+    int calls = 0;
+    connection.on_closed([&](auto &self, std::error_code) {
+        ++calls;
+        self.on_closed([&](auto &, std::error_code) { calls += 10; });
+    });
+    tcp_test::drive(loop, [&] { return calls == 1; });
+    connection.close();
+    snet::detail::LoopWork stop(loop, [&] { loop.quit(); });
+    stop.schedule();
+    loop.loop();
+    EXPECT_EQ(calls, 1);
+}
+
+TEST(TcpConnectionTest, ReplacementSurvivesThrow)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    int first = 0, replacement = 0;
+    connection.on_data([&](auto &current) {
+        ++first;
+        current.on_data([&](auto &) { ++replacement; });
+        throw std::runtime_error("application");
+    });
+    connection.start();
+    pair.send("one");
+    EXPECT_THROW(loop.loop(), std::runtime_error);
+    pair.send("two");
+    tcp_test::drive(loop, [&] { return replacement == 1; });
+    EXPECT_EQ(first, 1);
+    EXPECT_EQ(tcp_test::text(connection.input_data()), "onetwo");
+}
+
+TEST(TcpConnectionTest, CloseInsideDataNeverNestsClosed)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    bool inside = false;
+    int closed = 0;
+    connection.on_data([&](auto &current) {
+        inside = true;
+        current.close();
+        EXPECT_EQ(closed, 0);
+        inside = false;
+    });
+    connection.on_closed([&](auto &, std::error_code) {
+        EXPECT_FALSE(inside);
+        ++closed;
+    });
+    connection.start();
+    pair.send("one");
+    tcp_test::drive(loop, [&] { return closed == 1; });
+}
+
+TEST(TcpConnectionTest, CloseThenThrowSkipsClosedAndDestructorCallsNothing)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    int closed = 0;
+    {
+        snet::TcpConnection connection(loop, std::move(pair.accepted));
+        connection.on_closed([&](auto &, std::error_code) { ++closed; });
+        connection.on_data([](auto &current) {
+            current.close();
+            throw std::runtime_error("application");
+        });
+        connection.start();
+        pair.send("one");
+        EXPECT_THROW(loop.loop(), std::runtime_error);
+        snet::detail::LoopWork stop(loop, [&] { loop.quit(); });
+        stop.schedule();
+        loop.loop();
+        EXPECT_EQ(closed, 0);
+    }
+    EXPECT_EQ(closed, 0);
+}
+
+TEST(TcpConnectionTest, ThrowingClosedNotRetried)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    int calls = 0;
+    connection.on_closed([&](auto &, std::error_code) {
+        ++calls;
+        throw std::runtime_error("closed");
+    });
+    connection.close();
+    EXPECT_THROW(loop.loop(), std::runtime_error);
+    snet::detail::LoopWork stop(loop, [&] { loop.quit(); });
+    stop.schedule();
+    loop.loop();
+    EXPECT_EQ(calls, 1);
+}
+
+TEST(TcpConnectionTest, OutputSelfReplaceAndOneNotificationPerWork)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::ConnectionOptions options;
+    options.output_limit = 8;
+    options.output_low_watermark = 3;
+    snet::TcpConnection connection(loop, std::move(pair.accepted), options);
+    int first = 0, next = 0, closed = 0;
+    bool inside = false;
+    connection.on_output_available([&](auto &current) {
+        ++first;
+        current.on_output_available([&](auto &self) {
+            ++next;
+            inside = true;
+            self.close();
+            loop.quit();
+            EXPECT_EQ(closed, 0);
+            inside = false;
+        });
+    });
+    connection.on_closed([&](auto &, std::error_code) {
+        EXPECT_FALSE(inside);
+        ++closed;
+    });
+    connection.start();
+    connection.send(tcp_test::bytes("12345678"));
+    tcp_test::drive(loop, [&] { return first == 1; });
+    connection.send(tcp_test::bytes("abcdefgh"));
+    loop.loop();
+    EXPECT_EQ(next, 1);
+    EXPECT_EQ(closed, 0);
+    tcp_test::drive(loop, [&] { return closed == 1; });
+}
+
+TEST(TcpConnectionTest, CallbackErrorDoesNotCloseLivePeerOrLoseOutput)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair bad, good;
+    snet::TcpConnection first(loop, std::move(bad.accepted)), second(loop, std::move(good.accepted));
+    first.on_data([](auto &self) {
+        self.send(tcp_test::bytes("reply"));
+        throw std::runtime_error("app");
+    });
+    first.start();
+    second.start();
+    bad.send("request");
+    EXPECT_THROW(loop.loop(), std::runtime_error);
+    EXPECT_EQ(second.send(tcp_test::bytes("alive")).status, snet::SendStatus::accepted);
+    std::string a, b;
+    tcp_test::drive(loop, [&] {
+        a += bad.read();
+        b += good.read();
+        return a == "reply" && b == "alive";
+    });
+}
+
+TEST(TcpConnectionTest, FullInputHalfCloseWaitsForCapacity)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::ConnectionOptions options;
+    options.input_limit = 4;
+    snet::TcpConnection connection(loop, std::move(pair.accepted), options);
+    int data = 0, eof = 0;
+    connection.on_data([&](auto &) { ++data; });
+    connection.on_eof([&](auto &) { ++eof; });
+    connection.start();
+    pair.send("last");
+    tcp_test::check(::shutdown(pair.peer.get_fd(), SHUT_WR), "shutdown");
+    tcp_test::drive(loop, [&] { return data == 1; });
+    for (int i = 0; i < 3; ++i) {
+        snet::detail::LoopWork stop(loop, [&] { loop.quit(); });
+        stop.schedule();
+        loop.loop();
+    }
+    EXPECT_EQ(data, 1);
+    EXPECT_EQ(eof, 0);
+    EXPECT_EQ(tcp_test::text(connection.input_data()), "last");
+    connection.consume_input(1);
+    tcp_test::drive(loop, [&] { return eof == 1; });
+    EXPECT_EQ(tcp_test::text(connection.input_data()), "ast");
+}
+
+TEST(TcpConnectionTest, UnregisteredPauseResume)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    connection.pause_reading();
+    connection.start();
+    pair.send("queued");
+    snet::detail::LoopWork stop(loop, [&] { loop.quit(); });
+    stop.schedule();
+    loop.loop();
+    EXPECT_TRUE(connection.input_data().empty());
+    connection.resume_reading();
+    tcp_test::drive(loop, [&] { return connection.input_data().size() == 6; });
+}
+
+TEST(TcpConnectionTest, PausedReadAndPeerReset)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    connection.start();
+    connection.pause_reading();
+    // A pending output attempt supplies useful interest even while input is paused.
+    connection.send(tcp_test::bytes("reply"));
+    linger reset{1, 0};
+    tcp_test::check(::setsockopt(pair.peer.get_fd(), SOL_SOCKET, SO_LINGER, &reset, sizeof(reset)), "linger");
+    pair.peer.close();
+    int closed = 0;
+    connection.on_closed([&](auto &, std::error_code error) {
+        EXPECT_TRUE(error);
+        ++closed;
+    });
+    tcp_test::drive(loop, [&] { return closed == 1; });
+}
+
+TEST(TcpConnectionTest, CloseSavedBatchReuseFdThenThrow)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair a, b;
+    int old_fd = b.accepted.get_fd();
+    snet::TcpConnection first(loop, std::move(a.accepted)), second(loop, std::move(b.accepted));
+    snet::Socket replacement;
+    int second_calls = 0, closed = 0;
+    second.on_data([&](auto &) { ++second_calls; });
+    second.on_closed([&](auto &, std::error_code) { ++closed; });
+    first.on_data([&](auto &self) {
+        second.close();
+        auto fresh = tcp_test::make_socket(AF_INET);
+        if (fresh.get_fd() != old_fd) {
+            tcp_test::check(::dup2(fresh.get_fd(), old_fd), "dup2");
+            replacement = snet::Socket(old_fd);
+        } else
+            replacement = std::move(fresh);
+        self.pause_reading();
+        throw std::runtime_error("app");
+    });
+    first.start();
+    second.start();
+    a.send("a");
+    b.send("b");
+    EXPECT_THROW(loop.loop(), std::runtime_error);
+    // If second happened to dispatch first, at most that one legitimate delivery is allowed.
+    int before = second_calls;
+    tcp_test::drive(loop, [&] { return closed == 1; });
+    EXPECT_EQ(second_calls, before);
+    EXPECT_NE(::fcntl(replacement.get_fd(), F_GETFD), -1);
+}
