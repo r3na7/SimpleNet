@@ -256,3 +256,54 @@ TEST(AcceptorTest, PauseResumeInsideReceiverKeepsCurrentHandlerInstalled)
     auto a = listener.connect(), b = listener.connect();
     tcp_test::drive(loop, [&] { return calls == 2; });
 }
+
+TEST(AcceptorTest, SelfReplaceReceiverRetainsCallable)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::Acceptor acceptor(loop, std::move(listener.socket));
+    int first = 0, next = 0;
+    auto lifetime = std::make_shared<int>(0);
+    std::weak_ptr<int> weak = lifetime;
+    acceptor.on_accept([&, lifetime](snet::Socket) {
+        ++first;
+        acceptor.on_accept([&](snet::Socket) { ++next; });
+        EXPECT_FALSE(weak.expired());
+    });
+    lifetime.reset();
+    acceptor.start();
+    auto a = listener.connect(), b = listener.connect();
+    tcp_test::drive(loop, [&] { return first + next == 2; });
+    EXPECT_EQ(first, 1);
+    EXPECT_EQ(next, 1);
+    EXPECT_TRUE(weak.expired());
+}
+TEST(AcceptorTest, MutableReceiverStatePersists)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::Acceptor acceptor(loop, std::move(listener.socket));
+    std::vector<int> values;
+    acceptor.on_accept([&, count = 0](snet::Socket) mutable { values.push_back(++count); });
+    acceptor.start();
+    auto a = listener.connect(), b = listener.connect();
+    tcp_test::drive(loop, [&] { return values.size() == 2; });
+    EXPECT_EQ(values, (std::vector<int>{1, 2}));
+}
+TEST(AcceptorTest, ReceiverReplacementSurvivesThrow)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::Acceptor acceptor(loop, std::move(listener.socket));
+    int first = 0, next = 0;
+    acceptor.on_accept([&](snet::Socket) {
+        ++first;
+        acceptor.on_accept([&](snet::Socket) { ++next; });
+        throw std::runtime_error("receiver");
+    });
+    acceptor.start();
+    auto a = listener.connect(), b = listener.connect();
+    EXPECT_THROW(accept_test::once(loop), std::runtime_error);
+    tcp_test::drive(loop, [&] { return next == 1; });
+    EXPECT_EQ(first, 1);
+}

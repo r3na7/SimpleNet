@@ -20,6 +20,23 @@ struct FlagGuard {
     }
     ~FlagGuard() noexcept { flag = false; }
 };
+bool pending_connection_error(int error) noexcept
+{
+    switch (error) {
+    case ECONNABORTED:
+    case ENETDOWN:
+    case EPROTO:
+    case ENOPROTOOPT:
+    case EHOSTDOWN:
+    case ENONET:
+    case EHOSTUNREACH:
+    case EOPNOTSUPP:
+    case ENETUNREACH:
+        return true;
+    default:
+        return false;
+    }
+}
 snet::AcceptorOptions checked_options(snet::AcceptorOptions options)
 {
     if (!options.accept_call_budget)
@@ -128,6 +145,10 @@ void snet::Acceptor::handle_accept()
 {
     if (!accepting())
         return;
+    if (channel_.get_revents() & EPOLLHUP) {
+        handle_error();
+        return;
+    }
     FlagGuard guard(servicing_);
     for (std::size_t calls = 0; calls < options_.accept_call_budget && accepting(); ++calls) {
         const int fd = ::accept4(socket_.get_fd(), nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
@@ -139,9 +160,27 @@ void snet::Acceptor::handle_accept()
         const int error = errno;
         if (error == EAGAIN || error == EWOULDBLOCK)
             return;
-        if (error == EINTR)
+        if (error == EINTR || pending_connection_error(error))
             continue;
+        if (error == EMFILE || error == ENFILE || error == ENOMEM || error == ENOBUFS) {
+            pause_accepting();
+            invoke(error_callback_, *this, std::error_code(error, std::system_category()));
+            return;
+        }
         throw std::system_error(error, std::system_category(), "accept4");
     }
 }
-void snet::Acceptor::handle_error() {}
+void snet::Acceptor::handle_error()
+{
+    if (state_ != State::active)
+        return;
+    FlagGuard guard(servicing_);
+    int error = 0;
+    socklen_t size = sizeof(error);
+    if (::getsockopt(socket_.get_fd(), SOL_SOCKET, SO_ERROR, &error, &size) == -1)
+        throw std::system_error(errno, std::system_category(), "getsockopt listener SO_ERROR");
+    if (error)
+        throw std::system_error(error, std::system_category(), "listener SO_ERROR");
+    if (channel_.get_revents() & EPOLLHUP)
+        throw std::system_error(EIO, std::system_category(), "unexpected listener hangup");
+}
