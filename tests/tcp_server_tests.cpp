@@ -382,28 +382,35 @@ TEST(TcpServerTest, UnrelatedExceptionCancelsClosedButPreservesLiveOutput)
     std::weak_ptr<int> weak;
     server.on_connection([&](auto &connection) {
         if (++configured == 1) {
+            live = &connection;
+        } else {
             auto token = std::make_shared<int>(0);
             weak = token;
             connection.on_closed([&, token](auto &, std::error_code) { ++closed; });
             connection.close();
-        } else
-            live = &connection;
+        }
     });
     server.start();
-    auto a = listener.connect(), b = listener.connect();
+    auto live_peer = listener.connect();
+    accept_test::once(loop);
+    ASSERT_EQ(configured, 1);
+    ASSERT_NE(live, nullptr); // Activation has completed before send.
+    auto closing_peer = listener.connect();
     snet::detail::LoopWork fail(loop, [] { throw std::runtime_error("unrelated"); });
-    fail.schedule();
+    fail.schedule(); // Runs before the newly queued send work.
+    EXPECT_EQ(live->send(tcp_test::bytes("live")).status, snet::SendStatus::accepted);
+    EXPECT_TRUE(peer_read(live_peer).empty());
     EXPECT_THROW(loop.loop(), std::runtime_error);
     EXPECT_EQ(configured, 2);
     EXPECT_TRUE(weak.expired());
     EXPECT_EQ(closed, 0);
-    ASSERT_NE(live, nullptr);
-    EXPECT_EQ(live->send(tcp_test::bytes("live")).status, snet::SendStatus::accepted);
+    EXPECT_TRUE(peer_read(live_peer).empty());
     std::string reply;
     tcp_test::drive(loop, [&] {
-        reply += peer_read(b);
+        reply += peer_read(live_peer);
         return reply == "live";
-    });
+    }); // No second send: the original pending bytes must survive cleanup.
+    EXPECT_EQ(reply, "live");
 }
 TEST(TcpServerTest, QuitAndSmallWorkBudgetRetainPendingOwners)
 {
