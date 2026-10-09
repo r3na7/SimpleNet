@@ -92,31 +92,10 @@ gtest_discover_tests(simplenet_tcp_server_allocation_tests TEST_PREFIX serverall
 
 if(SIMPLENET_BUILD_EXAMPLES)
     find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
-    add_executable(simplenet_signal_stop_tests signal_stop_tests.cpp)
-    target_include_directories(simplenet_signal_stop_tests PRIVATE ${PROJECT_SOURCE_DIR}/examples)
-    target_link_libraries(simplenet_signal_stop_tests PRIVATE SimpleNet GTest::gtest_main)
-    target_link_options(simplenet_signal_stop_tests PRIVATE -Wl,--wrap=signalfd -Wl,--wrap=epoll_ctl -Wl,--wrap=close)
-    gtest_discover_tests(simplenet_signal_stop_tests TEST_PREFIX demosignal. PROPERTIES TIMEOUT 10)
-    foreach(stop_signal INT TERM)
-        string(TOLOWER ${stop_signal} signal_suffix)
-        add_test(NAME demo.harness_cancel_${signal_suffix} COMMAND ${Python3_EXECUTABLE} -B
-            ${CMAKE_CURRENT_SOURCE_DIR}/echo_harness_cancel_tests.py
-            --server $<TARGET_FILE:snet_echo_server> --client ${PROJECT_SOURCE_DIR}/examples/slow_echo_client.py
-            --harness ${CMAKE_CURRENT_SOURCE_DIR}/echo_demo_tests.py --signal ${stop_signal})
-        set_tests_properties(demo.harness_cancel_${signal_suffix} PROPERTIES TIMEOUT 45)
-    endforeach()
-    add_test(NAME demo.client_setup_deadline COMMAND ${Python3_EXECUTABLE} -B
-        ${CMAKE_CURRENT_SOURCE_DIR}/client_setup_deadline_tests.py)
-    set_tests_properties(demo.client_setup_deadline PROPERTIES TIMEOUT 45)
-    foreach(case client_stream client_help client_invalid_cli slow_ipv4 slow_ipv6 client_corrupt client_early_eof client_stall client_connect_failure)
-        add_test(NAME demo.${case} COMMAND ${Python3_EXECUTABLE} -B
-            ${CMAKE_CURRENT_SOURCE_DIR}/echo_demo_tests.py --server $<TARGET_FILE:snet_echo_server>
-            --client ${PROJECT_SOURCE_DIR}/examples/slow_echo_client.py --case ${case})
-        set_tests_properties(demo.${case} PROPERTIES TIMEOUT 45)
-    endforeach()
-    foreach(case help invalid_cli occupied_address echo_ipv4 echo_ipv6 signal_int signal_term signal_active startup_cleanup)
-        add_test(NAME demo.${case} COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/echo_demo_tests.py --server $<TARGET_FILE:snet_echo_server> --case ${case})
-        set_tests_properties(demo.${case} PROPERTIES TIMEOUT 45)
+    foreach(case server client)
+        add_test(NAME example.echo_${case} COMMAND ${Python3_EXECUTABLE} -B
+            ${CMAKE_CURRENT_SOURCE_DIR}/simple_echo_tests.py --server $<TARGET_FILE:snet_echo_server>
+            --client ${PROJECT_SOURCE_DIR}/examples/echo_client.py --case ${case})
+        set_tests_properties(example.echo_${case} PROPERTIES TIMEOUT 20 RESOURCE_LOCK snet_echo_port_5555)
     endforeach()
 endif()

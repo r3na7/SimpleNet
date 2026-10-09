@@ -1,95 +1,78 @@
 # snet v1 readiness
 
-This version targets a demonstrable modular C++20 networking library on Linux:
-TCP, IPv4/IPv6, one Reactor execution thread, non-blocking I/O and level-triggered epoll.
-Components can be used independently or assembled through TcpServer.
+The agreed library scope is Linux, C++20, TCP IPv4/IPv6, non-blocking sockets,
+level-triggered epoll and one Reactor thread. Components can be used independently
+or assembled through TcpServer.
 
 ## Criteria and evidence
 
-| Criterion | Implementation | Verification |
-|---|---|---|
-| Public API | Public headers and Simplenet.hpp; independent components plus TcpServer | External add_subdirectory consumer builds/runs in Debug and Release |
-| Reactor and readiness | Channel, Poller, EventLoop | Registration/dispatch/cancellation, saved-batch and budget tests |
-| TCP lifecycle | TcpConnection, Acceptor, TcpServer | EOF/half-close/finish/close, multiple clients, stop operations and owner cleanup |
-| Input/output queues | Buffer and bounded ConnectionOptions | Partial reads/writes, queue limits, threshold callbacks and retained-input retries |
-| Socket/system errors | Per-connection terminal errors; paused resource exhaustion; infrastructure exceptions | Real TCP and isolated syscall-failure tests |
-| RAII and stable ownership | Socket; server unique_ptr owners; owner cleanup phase | Descriptor reuse, map rehash, callbacks/exceptions, allocation failures and sanitizer checks |
-| Examples | snet_echo_server and slow_echo_client.py | Real IPv4/IPv6 processes, binary echo larger than limits, slow simultaneous clients and EOF |
-| Process stopping | Example-local SignalStop | SIGINT/SIGTERM, active clients, mask rollback and unregister-before-close tests |
-| CMake | Optional examples; public SimpleNet target | Library-only/example-only dependency checks and external consumer |
-| Documentation | README, component and demonstration guides, public API comments | Executed quick-start commands; Doxygen with warnings treated as errors |
-| Structure | include/simplenet, src, tests, examples, docs | Build products in ignored build directories; no product test hooks |
+| Criterion | Implementation and checks |
+|---|---|
+| Public API | Public headers/Simplenet.hpp; external add_subdirectory consumer fixture |
+| Reactor | Channel, Poller, EventLoop; registration, dispatch, budgets and saved-batch tests |
+| TCP lifecycle | TcpConnection, Acceptor, TcpServer; EOF, half-close, finish, close and stable owner cleanup |
+| Input/output buffering | Buffer and bounded queues; partial I/O, threshold callbacks and retained-input retries |
+| Error handling | Socket/resource/registration/exception and allocation-failure tests |
+| RAII | Socket ownership, fd reuse, stable addresses, map rehash and callback-lifetime tests |
+| Examples | One-file C++ echo server and interactive Python client; two executable smoke tests |
+| Build/documentation | CMake dependency gating, README, guides and Doxygen warnings-as-errors |
 
-The strengthened `UnrelatedExceptionCancelsClosedButPreservesLiveOutput` regression
-queues output before another action throws. Restarting the loop delivers those bytes
-without another send; closed candidates are independently removed. A deliberate
-cancellation mutation makes the regression fail.
+There are 270 independent library regression tests, including 31 allocator-shim cases.
+The two current echo smoke tests add checks for server messages, exact echo, successive
+clients and multiple interactive messages in one connection. The previous complex
+signal/slow-client demonstration and its 28 tests have been removed at the user's
+request; they do not describe the current example. Library contracts remain unchanged.
 
-The baseline had 270 tests. The demonstration adds 7 signal-owner cases and
-21 executable/client cases: **298 ordinary tests**, including 31 allocation-shim cases.
-Debug and Release suites both pass, including cancellation and setup-deadline
-regressions added after review. GoogleTest 1.17.0 remains the pinned default;
-local checks use the explicitly supplied system source 1.14 as an offline override.
-IPv6 tests were executed, not skipped.
+The queued-output exception regression sends before the unrelated exception and
+verifies delivery after loop restart without a second send. The external consumer
+fixture uses only public includes and the SimpleNet CMake target.
 
-## Reproduce verification
+## Reproduce
 
 ```sh
-cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug -DSIMPLENET_BUILD_EXAMPLES=ON
-cmake --build build-debug -j2
-ctest --test-dir build-debug --output-on-failure
-cmake --build build-debug --target docs
+cmake -S . -B build -DSIMPLENET_BUILD_EXAMPLES=ON
+cmake --build build -j2
+ctest --test-dir build --output-on-failure
+cmake --build build --target docs
 ```
 
-Repeat in another build directory with `-DCMAKE_BUILD_TYPE=Release`. To use offline
-GoogleTest sources, add `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest`.
-For a build without test/client/documentation dependencies, disable BUILD_TESTING,
-SIMPLENET_BUILD_EXAMPLES and SIMPLENET_BUILD_DOCS. The server alone needs examples ON
-and testing OFF. Enabling both examples and tests explicitly requires Python 3.8+;
-missing Python fails configuration instead of silently omitting executable tests.
+Use `-DCMAKE_BUILD_TYPE=Debug` or `Release` in separate build directories. For offline
+GoogleTest, add `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/googletest`; 1.17.0
+remains the default pin. The local development override uses source 1.14.
 
-A separate consumer fixture lives in `tests/consumer/`. Copy it outside the library
-source tree, configure with `-DSNET_SOURCE_DIR=/absolute/path/to/SimpleNet`, build and
-run `snet_consumer_check`. It includes only public headers and links SimpleNet;
-no install/find_package package is claimed.
+Library-only builds can disable BUILD_TESTING, SIMPLENET_BUILD_EXAMPLES and
+SIMPLENET_BUILD_DOCS. The C++ server alone needs examples ON and testing OFF.
+Examples+testing require Python 3.8+ for the smoke tests. Tests use port 5555, so stop
+a manually running example before invoking them.
 
-Sanitizer configuration for Clang:
+Copy `tests/consumer/` outside the source tree, configure with
+`-DSNET_SOURCE_DIR=/absolute/path/to/SimpleNet`, build and run `snet_consumer_check`.
+No install/find_package package is exported.
+
+For sanitizer checks, configure Clang with compiler flags
+`-fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie` and linker flags
+`-fsanitize=address,undefined -no-pie`, then run:
 
 ```sh
-cmake -S . -B build-sanitize -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug \
-  -DSIMPLENET_BUILD_EXAMPLES=ON \
-  -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie' \
-  -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined -no-pie'
-cmake --build build-sanitize -j2
 ctest --test-dir build-sanitize --output-on-failure \
-  -E '^(loopalloc|bufferalloc|tcpalloc|acceptalloc|serveralloc)\.'
+  -E '^(loopalloc|bufferalloc|tcpalloc|acceptalloc|serveralloc)[.]'
 ```
 
-The 31 tests replacing allocation functions run in ordinary builds, separately from
-ASan. All remaining **267 tests pass under ASan/UBSan/LSan**, including signal/subprocess
-cases that launch the sanitized server. Doxygen generates with zero warnings.
-The final verification record is retained with the development plan.
+The 31 allocator-shim tests run in ordinary builds. Sanitizer checks select the other
+library tests and the enabled example smoke tests.
 
-## Supported limits
+## Limits
 
-All library use is in the Reactor thread; cross-thread calls and wakeups are unsupported.
-Owners must survive their callbacks/dispatch/work and remove Channel registrations
-before closing monitored descriptors. Server-owned references expire after cleanup.
-Callbacks may throw, but the loop does not roll back application state.
+All use is in the Reactor thread. Owners must survive callbacks/dispatch/work and
+unregister Channels before closing monitored fds. Server-owned references expire
+after owner cleanup. Exceptions do not roll back application state.
 
-send accepts a copied prefix into the library queue, not a delivery acknowledgement.
-EOF ends one TCP direction. finish_sending drains output; close/stop discard output.
-The demo's signal stop is immediate and its listener/resource failure policy exits;
-applications choose their own recovery and graceful shutdown policies. Overlapping
-stop signals during mask restoration/fatal setup may terminate by signal instead of
-returning the ordinary stop code. Catchable harness cancellation cleans up children;
-SIGKILL requires supervising-runner cleanup. The client deadline includes per-peer
-setup checks; very large client counts remain limited by system memory/descriptors.
+send reports queue acceptance, not delivery. EOF ends one direction; finish_sending
+drains output, while close/stop discard it. The minimal example uses ordinary process
+termination for Ctrl+C and provides no graceful signal-shutdown machinery.
 
-No DNS/client-connection factory, UDP/TLS/HTTP, thread pool, multiple reactors,
-coroutines, timers, installer package or benchmark claim is included. Address can
-represent an existing Unix address value; v1 networking scenarios remain TCP IPv4/IPv6.
-
-This is readiness for demonstration of the agreed v1 scope. A green regression suite
-and examples do not replace long-duration/load testing or establish general
-production readiness. Remote publication and version tagging are separate decisions.
+The library supports IPv4/IPv6; the deliberately small executable uses a fixed IPv4
+loopback address. DNS/outgoing connection factories, UDP/TLS/HTTP, concurrency,
+coroutines, timers, installers and benchmarks are outside the agreed version scope.
+This is demonstration readiness, not a claim of long-duration/load validation or
+general production readiness. Publication and tagging are separate decisions.

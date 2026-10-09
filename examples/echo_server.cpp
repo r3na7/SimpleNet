@@ -1,189 +1,68 @@
-#include "signal_stop.hpp"
-#include <charconv>
+#include <cerrno>
 #include <iostream>
 #include <memory>
-#include <string>
+#include <simplenet/Simplenet.hpp>
 #include <string_view>
 #include <sys/socket.h>
+#include <system_error>
+#include <utility>
 
-namespace
+int main()
 {
-constexpr const char *usage = "Usage: snet_echo_server [--host NUMERIC_IP] [--port 0..65535] [--help]\n";
-struct Arguments {
-    std::string host = "127.0.0.1";
-    unsigned port = 5555;
-    bool help = false;
-};
-
-Arguments parse(int argc, char **argv)
-{
-    Arguments result;
-    bool host_seen = false, port_seen = false;
-
-    for (int i = 1; i < argc; ++i) {
-        const std::string_view flag(argv[i]);
-
-        if (flag == "--help" && argc == 2) {
-            result.help = true;
+    try {
+        auto check = [](int result) {
+            if (result == -1)
+                throw std::system_error(errno, std::generic_category());
             return result;
-        }
+        };
 
-        if ((flag != "--host" && flag != "--port") || i + 1 == argc)
-            throw std::invalid_argument("Unknown argument or missing value");
+        snet::Socket listener(check(::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0)));
+        int reuse = 1;
+        check(::setsockopt(listener.get_fd(), SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)));
 
-        const std::string_view value(argv[++i]);
+        auto address = snet::Address::IPv4("127.0.0.1", 5555);
+        check(::bind(listener.get_fd(), address.data(), address.size()));
+        check(::listen(listener.get_fd(), 128));
 
-        if (flag == "--host") {
-            if (host_seen)
-                throw std::invalid_argument("Duplicate host");
-
-            host_seen = true;
-            result.host = value;
-        } else {
-            if (port_seen)
-                throw std::invalid_argument("Duplicate port");
-
-            port_seen = true;
-            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result.port);
-
-            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || result.port > 65535)
-                throw std::invalid_argument("Invalid port");
-        }
-    }
-
-    return result;
-}
-
-void checked(int result, const char *operation)
-{
-    if (result == -1)
-        throw std::system_error(errno, std::generic_category(), operation);
-}
-
-snet::Socket listen_socket(const snet::Address &address, unsigned &port)
-{
-    const int fd = ::socket(address.family(), SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-
-    checked(fd, "socket");
-    snet::Socket socket(fd);
-    const int enabled = 1;
-
-    checked(::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled)), "SO_REUSEADDR");
-
-    if (address.family() == AF_INET6)
-        checked(::setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &enabled, sizeof(enabled)), "IPV6_V6ONLY");
-
-    checked(::bind(fd, address.data(), address.size()), "bind");
-    checked(::listen(fd, 128), "listen");
-    sockaddr_storage actual{};
-    socklen_t size = sizeof(actual);
-
-    checked(::getsockname(fd, reinterpret_cast<sockaddr *>(&actual), &size), "getsockname");
-
-    if (address.family() == AF_INET)
-        port = ntohs(reinterpret_cast<const sockaddr_in *>(&actual)->sin_port);
-    else
-        port = ntohs(reinterpret_cast<const sockaddr_in6 *>(&actual)->sin6_port);
-
-    return socket;
-}
-
-struct EchoState {
-    bool eof = false, finishing = false;
-};
-
-void configure_echo(snet::TcpConnection &client)
-{
-    auto state = std::make_shared<EchoState>();
-    auto pump = [state](snet::TcpConnection &current) {
-        if (state->finishing)
-            return;
-
-        const auto sent = current.send(current.input_data());
-
-        if (sent.status != snet::SendStatus::accepted && sent.status != snet::SendStatus::would_block)
-            return;
-
-        current.consume_input(sent.accepted_bytes);
-
-        if (!current.input_data().empty()) {
-            current.pause_reading();
-        } else if (state->eof) {
-            state->finishing = true;
-            current.finish_sending();
-        } else {
-            current.resume_reading();
-        }
-    };
-
-    client.on_data(pump);
-    client.on_output_available(pump);
-    client.on_eof([state, pump](auto &current) {
-        state->eof = true;
-        pump(current);
-    });
-    client.on_closed([](auto &, std::error_code error) {
-        if (error)
-            std::cerr << "Client closed: " << error.message() << '\n';
-    });
-}
-} // namespace
-
-int main(int argc, char **argv)
-{
-    Arguments args;
-    std::unique_ptr<snet::Address> address;
-
-    try {
-        args = parse(argc, argv);
-
-        if (args.help) {
-            std::cout << usage;
-
-            return 0;
-        }
-
-        address = std::make_unique<snet::Address>(args.host.find(':') == std::string::npos
-                                                      ? snet::Address::IPv4(args.host, args.port)
-                                                      : snet::Address::IPv6(args.host, args.port));
-    } catch (const std::invalid_argument &error) {
-        std::cerr << error.what() << '\n' << usage;
-        return 2;
-    } catch (const std::exception &error) {
-        std::cerr << error.what() << '\n';
-        return 1;
-    }
-
-    try {
         snet::EventLoop loop;
-        snet::TcpServer *active = nullptr;
+        snet::TcpServer server(loop, std::move(listener));
+        server.on_connection([](snet::TcpConnection &client) {
+            std::cout << "Клиент подключился" << std::endl;
+            auto eof = std::make_shared<bool>(false);
 
-        demo::SignalStop signals(loop, [&] {
-            if (active)
-                active->stop();
+            auto echo = [eof](snet::TcpConnection &c) {
+                auto sent = c.send(c.input_data());
+                if (sent.status != snet::SendStatus::accepted && sent.status != snet::SendStatus::would_block)
+                    return;
 
-            loop.quit();
+                c.consume_input(sent.accepted_bytes);
+                if (!c.input_data().empty())
+                    c.pause_reading();
+                else if (*eof)
+                    c.finish_sending();
+                else
+                    c.resume_reading();
+            };
+
+            client.on_data([echo](auto &c) {
+                auto data = c.input_data();
+                std::cout << "Получено: " << std::string_view(data.data(), data.size()) << std::flush;
+                echo(c);
+            });
+            client.on_output_available(echo);
+            client.on_eof([eof, echo](auto &c) {
+                *eof = true;
+                echo(c);
+            });
+            client.on_closed([](auto &, std::error_code) { std::cout << "Клиент отключился" << std::endl; });
         });
-        auto listener = listen_socket(*address, args.port);
-        snet::TcpServerOptions options;
-
-        options.connection.input_limit = 64 * 1024;
-        options.connection.output_limit = 8 * 1024;
-        options.connection.output_low_watermark = 4 * 1024;
-        snet::TcpServer server(loop, std::move(listener), options);
-
-        active = &server;
-        server.on_connection(configure_echo);
-        server.on_accept_error(
-            [](auto &, std::error_code error) { throw std::system_error(error, "Listener resource exhaustion"); });
+        server.on_accept_error([](auto &, std::error_code error) { throw std::system_error(error); });
 
         server.start();
-        std::cout << "READY " << args.host << ' ' << args.port << std::endl;
+        std::cout << "Сервер слушает 127.0.0.1:5555" << std::endl;
         loop.loop();
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
         return 1;
     }
-
-    return 0;
 }

@@ -131,9 +131,9 @@ Destructor stops listener and clients, cancels work and releases owners/cleanup
 registration without application notifications. Existing unexpected DEL failure
 policy diagnoses syscall/fd/errno then terminates rather than freeing registered memory.
 
-The persistent runnable server is in [the demonstration guide](examples.md). It uses
-signal-based immediate stopping; the following fragment deliberately chooses a
-different application policy.
+The persistent interactive server is in [the simple example guide](examples.md).
+The following fragment deliberately chooses a different application policy: stopping
+after two clients.
 
 ## Two-client echo example
 

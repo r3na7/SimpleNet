@@ -25,24 +25,25 @@ these components on a caller-owned loop; see the [server guide](docs/tcp-server.
 ```sh
 cmake -S . -B build -DSIMPLENET_BUILD_EXAMPLES=ON
 cmake --build build -j2
-./build/examples/snet_echo_server --host 127.0.0.1 --port 5555
+./build/examples/snet_echo_server
 ```
 
 In a second terminal:
 
 ```sh
-python3 examples/slow_echo_client.py --host 127.0.0.1 --port 5555 --clients 2
+python3 examples/echo_client.py
 ```
 
-The client checks exact binary echo and EOF for two simultaneous slowly reading
-connections. Use `--host ::1` in both commands for IPv6; use Ctrl+C to stop the server.
-EOF drains a client's response; signal stop closes immediately and may discard output.
-See the [demonstration guide](docs/examples.md) for the queue/data flow and policies,
-and [v1 readiness](docs/v1-status.md) for verification and supported limits.
+The server listens on `127.0.0.1:5555`, prints client connection/disconnection
+notices and incoming data, and echoes it back. Type messages in the Python client;
+`/quit`, Ctrl+D or Ctrl+C disconnect the client. Ctrl+C in the server terminal stops
+the server. See the [simple example guide](docs/examples.md) and
+[v1 readiness](docs/v1-status.md).
 
-CMake examples are optional (OFF by default). The server is C++ only; the verification
-client and the subprocess tests require Python 3.8+ with no third-party packages.
-The default test build downloads GoogleTest; offline configuration is described below.
+The example has one C++ server file and one Python client file. CMake examples are
+optional (OFF by default). The client and the two example smoke tests use Python
+3.8+ with the standard library. The default test build downloads GoogleTest;
+offline configuration is described below.
 
 ## Application integration
 
@@ -195,9 +196,9 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-Enable `-DSIMPLENET_BUILD_EXAMPLES=ON` to include signal-owner and executable
-subprocess tests; this combination requires a Python 3.8+ interpreter. Subprocess
-scenarios have a 45-second outer timeout; the client's internal deadline is 15 seconds.
+Enable `-DSIMPLENET_BUILD_EXAMPLES=ON` to include the two echo example smoke tests;
+this combination requires Python 3.8+. Example tests have a 20-second timeout and
+serialize access to port 5555. Stop a manually running example before these tests.
 
 CMake discovers GoogleTest cases automatically. Each case runs in a separate
 process with a ten-second timeout. Tests use real

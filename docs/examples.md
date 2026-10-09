@@ -1,110 +1,55 @@
-# Runnable TCP demonstration
+# Simple echo example
 
-The demonstration uses the public C++20 API on Linux. It assembles existing components;
-its echo and process-stop policies are application code.
+The example consists of two source files:
 
-## Build and run
+- `examples/echo_server.cpp`: a C++ snet server.
+- `examples/echo_client.py`: a small interactive Python client.
+
+## Run
+
+In the first terminal:
 
 ```sh
 cmake -S . -B build -DSIMPLENET_BUILD_EXAMPLES=ON
 cmake --build build -j2
-./build/examples/snet_echo_server --host 127.0.0.1 --port 5555
+./build/examples/snet_echo_server
 ```
 
-The server prints `READY 127.0.0.1 5555` after successful activation. In another terminal:
+The server listens on `127.0.0.1:5555` and prints client connection, incoming data
+and disconnection messages. Stop it with Ctrl+C (ordinary process termination).
+
+In a second terminal:
 
 ```sh
-python3 examples/slow_echo_client.py --host 127.0.0.1 --port 5555 --clients 2
+python3 examples/echo_client.py
 ```
 
-The client verifies 256 KiB of binary echo per connection, then EOF. It sends and reads
-concurrently across peers, initially waits 250 ms before reading, then reads at most
-1024 bytes every 5 ms per peer. Its overall deadline is 15 seconds. It uses Python 3.8+
-and the standard library. A corrupted, missing, extra or incomplete response is a failure.
+Type a message and press Enter. The client prints the echoed reply and waits for
+another message using the same connection. `/quit`, Ctrl+D or Ctrl+C disconnect it.
+The client limits each encoded message to 64 KiB including the newline, matching
+this small request/reply example; network operations have a five-second timeout.
 
-For IPv6, use `--host ::1` on both commands. The IPv6 listener is IPv6-only. Hosts must
-be numeric addresses, without DNS names or IPv6 zone IDs. Both programs offer `--help`.
-Server port zero is useful for tests: its READY line reports the assigned port.
+## Code flow
 
-Use Ctrl+C or SIGTERM to stop the server. A single loop-dispatched stop signal returns zero; overlapping signals during mask
-restoration or fatal setup follow the restored process dispositions and may terminate
-by signal. Argument errors
-return two, and infrastructure failures return one. The client returns zero only on
-complete verification, two on argument errors and one on verification/network failures.
+The server creates a non-blocking listener and transfers it to TcpServer.
+`on_connection` prints the connection notice and installs the client handlers.
+`on_data` prints the incoming bytes and sends them back. Only the accepted prefix
+is consumed; if output is full, reading pauses and `on_output_available` retries
+the retained suffix. EOF allows the remaining echo output to finish before closure.
+`on_closed` prints the disconnection notice.
 
-To build the C++ server without GoogleTest or Python:
+TCP is a byte stream: the server can print a message in multiple incoming chunks.
+The Python client sends a newline with the text and receives exactly as many echo
+bytes as it sent, so it does not assume that a single recv contains the full reply.
+
+To build the server alone without test or documentation dependencies:
 
 ```sh
 cmake -S . -B build-example -DBUILD_TESTING=OFF -DSIMPLENET_BUILD_EXAMPLES=ON -DSIMPLENET_BUILD_DOCS=OFF
 cmake --build build-example -j2
 ```
 
-Python is needed to run the client and, when testing and examples are both enabled,
-to configure/run the subprocess tests. See README for offline GoogleTest configuration.
-
-## Ownership and the Reactor
-
-```text
-application creates listening Socket and EventLoop
-   |
-   +-- TcpServer owns Acceptor and accepted TcpConnection objects
-   |        |
-   |        +-- connection owns socket, Channel, input and output queues
-   |
-   +-- SignalStop owns signalfd, its Channel registration and saved signal mask
-
-EventLoop delivers readiness and scheduled work in one thread.
-Owners remove registrations before closing fds or destroying Channels.
-```
-
-The signal mask is blocked before creating signalfd. SIGINT/SIGTERM become readable
-records; the Channel callback drains them and calls `server.stop()` and `loop.quit()`
-in ordinary loop execution. No async signal handler invokes C++ application code.
-SignalStop unregisters its Channel before closing its fd and restoring the previous
-mask. Constructor failures roll back the mask/fd too. The server is destroyed after
-loop dispatch returns; the loop outlives all registrations and owners.
-
-## Two queues and echo pumping
-
-The demonstration fixes input to 64 KiB, output to 8 KiB and the output notification
-threshold to 4 KiB. Standard per-iteration I/O budgets remain unchanged.
-
-`on_connection` installs handlers before the server activates a connection. Shared
-captures own small echo state, while TcpServer exclusively owns the connection.
-
-1. `on_data` runs the pump: send the readable input span into the output queue.
-2. Consume only `accepted_bytes`. If output was full, retain the input suffix and pause reading.
-3. `on_output_available` runs the same pump when output crosses the low watermark downward.
-4. After consuming the suffix, resume reading. The suffix needs processing even if no new network event arrives.
-5. On EOF, remember that input has ended. After the remaining input is processed, request `finish_sending()` once.
-
-A terminal send result ends pumping for that connection. Final input observed alongside
-a socket error is not promised an echo response. The callback does not resend after
-finish was requested. No framing is performed: TCP supplies bytes, not requests.
-
-EOF and process stop have different policies. EOF lets output drain before SHUT_WR
-and normal closure. SIGINT/SIGTERM uses immediate `stop()`, which can discard queued
-responses. It is not a graceful shutdown with deadlines or a delivery guarantee.
-A client reset affects that client; listener/resource/registration/allocation errors
-abort this example with diagnostics. A different application can choose its own recovery.
-
-The [two-client fragment](tcp-server.md#two-client-echo-example) deliberately quits
-after two closed clients; this executable continues accepting until a stop signal.
-
-## Checks and interpretation
-
-With examples and testing enabled, CTest runs real subprocess scenarios for IPv4/IPv6,
-slow simultaneous clients, later clients, signals, malformed arguments and occupied
-addresses. Client failure cases use local controlled peers for corruption, early EOF
-and timeout. Harnesses use deadlines and wait for their child processes. SIGINT/SIGTERM cancellation
-unwinds subprocess owners and retains a non-success exit status. SIGKILL cannot run
-cleanup: the supervising runner must then terminate/reap descendants.
-
-Direct signal-owner tests exercise mask restoration and DEL-before-close ordering,
-including failed signalfd creation and failed Channel registration. Existing library
-tests cover partial I/O, EAGAIN, EOF, budgets, exceptions and allocation failures.
-
-An executable run proves exact observed echo and termination; it does not guarantee
-that a particular kernel call hit EAGAIN on that run, prove fairness under every load,
-or confirm delivery from `send()` queue acceptance alone. See the [v1 status](v1-status.md)
-for the readiness evidence and the [connection contract](tcp-connection.md) for details.
+With examples and testing enabled, two smoke tests check server notices/echo and
+interactive-client replies. They serialize access to port 5555; stop a manually
+running example before running these tests. Library IPv4/IPv6, partial I/O and
+lifecycle behavior remains covered by the independent component tests.
