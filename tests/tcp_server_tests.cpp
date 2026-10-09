@@ -815,3 +815,57 @@ TEST(TcpServerTest, ReplacementDoesNotChangeExistingClientHandlers)
         return ar == "A" && br == "B";
     });
 }
+
+TEST(TcpServerTest, TwoSlowEchoClientsPumpRetainedInput)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServerOptions options;
+    options.connection.input_limit = 8;
+    options.connection.output_limit = 4;
+    options.connection.output_low_watermark = 0;
+    snet::TcpServer server(loop, std::move(listener.socket), options);
+    int closed = 0, pauses = 0;
+    server.on_connection([&](auto &connection) {
+        auto eof = std::make_shared<bool>(false);
+        auto pump = [&, eof](auto &current) {
+            auto result = current.send(current.input_data());
+            current.consume_input(result.accepted_bytes);
+            if (!current.input_data().empty()) {
+                ++pauses;
+                current.pause_reading();
+            } else {
+                current.resume_reading();
+                if (*eof)
+                    current.finish_sending();
+            }
+        };
+        connection.on_data(pump);
+        connection.on_output_available(pump);
+        connection.on_eof([eof, pump](auto &current) {
+            *eof = true;
+            pump(current);
+        });
+        connection.on_closed([&](auto &, std::error_code reason) {
+            EXPECT_FALSE(reason);
+            ++closed;
+        });
+    });
+    server.start();
+    auto a = listener.connect(), b = listener.connect();
+    const std::string first(129, 'A'), second(131, 'B');
+    ASSERT_EQ(::send(a.get_fd(), first.data(), first.size(), MSG_NOSIGNAL), static_cast<ssize_t>(first.size()));
+    ASSERT_EQ(::send(b.get_fd(), second.data(), second.size(), MSG_NOSIGNAL), static_cast<ssize_t>(second.size()));
+    tcp_test::check(::shutdown(a.get_fd(), SHUT_WR), "shutdown");
+    tcp_test::check(::shutdown(b.get_fd(), SHUT_WR), "shutdown");
+    std::string ar, br;
+    bool aeof = false, beof = false;
+    tcp_test::drive(loop, [&] {
+        ar += peer_read(a, &aeof);
+        br += peer_read(b, &beof);
+        return closed == 2 && aeof && beof;
+    });
+    EXPECT_EQ(ar, first);
+    EXPECT_EQ(br, second);
+    EXPECT_GT(pauses, 0);
+}

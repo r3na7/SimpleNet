@@ -310,3 +310,11 @@ EventLoop owns neither listener service objects nor client connections.
 Acceptance uses LT readiness and a bounded number of attempts per dispatch.
 Resource exhaustion removes registration before an application notification;
 explicit resume is required. See the [acceptance guide](acceptor.md).
+
+## Server-owned connections
+
+`TcpServer` now assembles Acceptor and unique_ptr-owned TcpConnection objects.
+It registers one owner LoopCleanup hook, links closed candidates without allocation,
+and deletes only after active/pending references are finished or canceled.
+App on_closed handlers never perform internal owner marking.
+Server stop methods do not quit the shared loop. See the [server guide](tcp-server.md).
