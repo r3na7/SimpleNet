@@ -27,7 +27,7 @@ int main()
         snet::EventLoop loop;
         snet::TcpServer server(loop, std::move(listener));
         server.on_connection([](snet::TcpConnection &client) {
-            std::cout << "Клиент подключился" << std::endl;
+            std::cout << "Client connected." << std::endl;
             auto eof = std::make_shared<bool>(false);
 
             auto echo = [eof](snet::TcpConnection &c) {
@@ -46,7 +46,7 @@ int main()
 
             client.on_data([echo](auto &c) {
                 auto data = c.input_data();
-                std::cout << "Получено: " << std::string_view(data.data(), data.size()) << std::flush;
+                std::cout << "Received: " << std::string_view(data.data(), data.size()) << std::flush;
                 echo(c);
             });
             client.on_output_available(echo);
@@ -54,12 +54,12 @@ int main()
                 *eof = true;
                 echo(c);
             });
-            client.on_closed([](auto &, std::error_code) { std::cout << "Клиент отключился" << std::endl; });
+            client.on_closed([](auto &, std::error_code) { std::cout << "Client disconnected." << std::endl; });
         });
         server.on_accept_error([](auto &, std::error_code error) { throw std::system_error(error); });
 
         server.start();
-        std::cout << "Сервер слушает 127.0.0.1:5555" << std::endl;
+        std::cout << "Server listening on 127.0.0.1:5555" << std::endl;
         loop.loop();
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
