@@ -12,14 +12,6 @@
 
 namespace
 {
-snet::ConnectionOptions checked_options(snet::ConnectionOptions options)
-{
-    if (!options.input_limit || !options.output_limit || options.output_low_watermark >= options.output_limit ||
-        !options.read_byte_budget || !options.read_call_budget || !options.write_byte_budget ||
-        !options.write_call_budget)
-        throw std::invalid_argument("Invalid connection limits or budgets");
-    return options;
-}
 int checked_fd(const snet::Socket &socket)
 {
     if (!socket.is_open())
@@ -52,6 +44,15 @@ struct FlagGuard {
     std::terminate();
 }
 } // namespace
+
+snet::ConnectionOptions snet::TcpConnection::checked_options(ConnectionOptions options)
+{
+    if (!options.input_limit || !options.output_limit || options.output_low_watermark >= options.output_limit ||
+        !options.read_byte_budget || !options.read_call_budget || !options.write_byte_budget ||
+        !options.write_call_budget)
+        throw std::invalid_argument("Invalid connection limits or budgets");
+    return options;
+}
 
 snet::TcpConnection::TcpConnection(EventLoop &loop, Socket socket, ConnectionOptions options)
     : loop_(loop), socket_(std::move(socket)), options_(checked_options(options)), channel_(checked_fd(socket_)),

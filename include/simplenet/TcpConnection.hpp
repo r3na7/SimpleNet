@@ -126,6 +126,7 @@ public:
 
 private:
     friend class TcpServer;
+    static ConnectionOptions checked_options(ConnectionOptions options);
     enum class State { created, active, failing, closed };
     template <class Function> struct Slot {
         Function callback;

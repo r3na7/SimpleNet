@@ -7,6 +7,7 @@ project(
 )
 
 add_library(SimpleNet STATIC
+    src/TcpServer.cpp
     src/Acceptor.cpp
     src/TcpConnection.cpp
     src/Buffer.cpp
