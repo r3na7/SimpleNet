@@ -863,3 +863,49 @@ TEST(TcpConnectionTest, CloseSavedBatchReuseFdThenThrow)
     EXPECT_EQ(second_calls, before);
     EXPECT_NE(::fcntl(replacement.get_fd(), F_GETFD), -1);
 }
+
+TEST(TcpConnectionTest, SlowEchoPumpsRetainedInputOnOutputAvailability)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::ConnectionOptions options;
+    options.input_limit = 8;
+    options.output_limit = 4;
+    options.output_low_watermark = 0;
+    snet::TcpConnection connection(loop, std::move(pair.accepted), options);
+    bool eof = false, closed = false;
+    int pauses = 0;
+    auto pump = [&](auto &current) {
+        auto sent = current.send(current.input_data());
+        current.consume_input(sent.accepted_bytes);
+        if (!current.input_data().empty()) {
+            ++pauses;
+            current.pause_reading();
+        } else {
+            current.resume_reading();
+            if (eof)
+                current.finish_sending();
+        }
+    };
+    connection.on_data(pump);
+    connection.on_output_available(pump);
+    connection.on_eof([&](auto &current) {
+        eof = true;
+        pump(current);
+    });
+    connection.on_closed([&](auto &, std::error_code error) {
+        EXPECT_FALSE(error);
+        closed = true;
+    });
+    connection.start();
+    const std::string source(129, 'x');
+    pair.send(source);
+    tcp_test::check(::shutdown(pair.peer.get_fd(), SHUT_WR), "shutdown");
+    std::string received;
+    tcp_test::drive(loop, [&] {
+        received += pair.read();
+        return closed && pair.eof;
+    });
+    EXPECT_EQ(received, source);
+    EXPECT_GT(pauses, 0);
+}

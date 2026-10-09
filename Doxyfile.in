@@ -8,7 +8,8 @@ OUTPUT_LANGUAGE        = English
 
 INPUT                  = "@CMAKE_CURRENT_SOURCE_DIR@/include" \
                          "@CMAKE_CURRENT_SOURCE_DIR@/README.md" \
-                         "@CMAKE_CURRENT_SOURCE_DIR@/docs/reactor.md"
+                         "@CMAKE_CURRENT_SOURCE_DIR@/docs/reactor.md" \
+                         "@CMAKE_CURRENT_SOURCE_DIR@/docs/tcp-connection.md"
 FILE_PATTERNS          = *.hpp *.md
 RECURSIVE              = YES
 INPUT_ENCODING         = UTF-8

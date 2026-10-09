@@ -1,9 +1,10 @@
 # SimpleNet
 
 `snet` is a modular C++20 library of networking components for Linux.
-The current API provides socket address values, socket ownership, a contiguous byte buffer, and a single-threaded Reactor
+The current API provides socket address values, socket ownership, a contiguous byte buffer, an established TCP connection, and a single-threaded Reactor
 based on `epoll`.
 
+- `snet::TcpConnection` owns an established TCP socket and services its input/output queues.
 - `snet::Buffer` stores bytes and exposes contiguous readable and prepared writable regions.
 - `snet::Socket` owns an already-open socket descriptor and closes it through RAII.
 - `snet::Address` stores an IPv4, IPv6, or Unix domain socket address.
@@ -11,10 +12,11 @@ based on `epoll`.
 - `snet::Poller` registers channels and waits for events, allowing custom loops.
 - `snet::EventLoop` provides a ready-to-use event waiting and dispatch loop.
 
-Channels do not own monitored fds. The caller controls socket creation,
-non-blocking mode, I/O, and resource lifetimes. TCP lifecycle management and
-connection-level buffering are not yet implemented. Contracts and examples for both loop models
-are described in the [Reactor guide](docs/reactor.md).
+Channels do not own monitored fds. Low-level users control I/O themselves;
+`TcpConnection` supplies bounded non-blocking I/O and connection lifecycle management.
+Socket establishment and the owner lifetime remain explicit. Acceptor and TcpServer
+are planned next. See the [TCP connection guide](docs/tcp-connection.md) and
+[Reactor guide](docs/reactor.md).
 
 ## Socket ownership
 
@@ -122,7 +124,7 @@ When using CMake, link your application to the `SimpleNet` target.
 
 ## Tests
 
-Reactor, Socket, and Buffer regression tests are built by default and use GoogleTest 1.17.0.
+Reactor, Socket, Buffer, and TCP connection regression tests are built by default and use GoogleTest 1.17.0.
 CMake downloads and builds this pinned release through FetchContent; a separate
 GoogleTest installation is not needed. The first configuration requires Git
 and internet access. GoogleMock and GoogleTest installation targets are disabled.

@@ -291,3 +291,13 @@ EventLoop's destructor invokes no work action or cleanup hook, destroys no exter
 object, and closes only its Poller; debug assertions diagnose surviving
 registrations. `TcpServer::stop` will stop service without destroying the server;
 the server owner must wait for its callbacks/cleanup to return before destruction.
+
+## Established high-level TCP
+
+`TcpConnection` now implements bounded non-blocking input/output, independent EOF
+and outgoing shutdown, and deferred application notifications above this Reactor.
+Its Channel and prepared work are internal. It uses level-triggered registration
+and shares I/O budgets between socket dispatch and work via `iteration_id()`.
+Standalone users own the connection until processing has returned; the loop does
+not destroy it. See the [TCP connection guide](tcp-connection.md) for activation,
+backpressure, handler replacement, exception and teardown contracts.
