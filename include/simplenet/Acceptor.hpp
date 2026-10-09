@@ -5,9 +5,11 @@
 #include "Channel.hpp"
 #include "EventLoop.hpp"
 #include "Socket.hpp"
+#include <cassert>
 #include <cstddef>
 #include <functional>
 #include <system_error>
+#include <utility>
 
 namespace snet
 {
@@ -64,6 +66,42 @@ public:
 
 private:
     enum class State { created, active, closed };
+    template <class Function> struct Slot {
+        Function callback;
+        bool executing = false, replaced = false;
+    };
+    template <class Function> void replace(Slot<Function> &slot, Function callback) noexcept
+    {
+        if (slot.executing)
+            slot.replaced = true;
+        slot.callback = std::move(callback);
+    }
+    template <class Function, class... Args> void invoke(Slot<Function> &slot, Args &&...args)
+    {
+        if (!slot.callback)
+            return;
+        assert(!callback_active_);
+        auto callable = std::move(slot.callback);
+        slot.executing = true;
+        slot.replaced = false;
+        callback_active_ = true;
+        auto restore = [&]() noexcept {
+            if (!slot.replaced)
+                slot.callback = std::move(callable);
+            slot.executing = false;
+            callback_active_ = false;
+        };
+        try {
+            callable(std::forward<Args>(args)...);
+        } catch (...) {
+            restore();
+            throw;
+        }
+        restore();
+    }
+    bool has_receiver() const noexcept;
+    bool accepting() const noexcept;
+
     void detach() noexcept;
     void handle_accept();
     void handle_error();
@@ -73,7 +111,7 @@ private:
     Channel channel_;
     State state_ = State::created;
     bool paused_ = false, registered_ = false, servicing_ = false, callback_active_ = false;
-    AcceptCallback accept_callback_;
-    ErrorCallback error_callback_;
+    Slot<AcceptCallback> accept_callback_;
+    Slot<ErrorCallback> error_callback_;
 };
 } // namespace snet

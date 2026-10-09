@@ -6,10 +6,20 @@
 #include <exception>
 #include <stdexcept>
 #include <sys/epoll.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 namespace
 {
+struct FlagGuard {
+    bool &flag;
+    explicit FlagGuard(bool &value) noexcept : flag(value)
+    {
+        assert(!flag);
+        flag = true;
+    }
+    ~FlagGuard() noexcept { flag = false; }
+};
 snet::AcceptorOptions checked_options(snet::AcceptorOptions options)
 {
     if (!options.accept_call_budget)
@@ -50,13 +60,18 @@ snet::Acceptor::~Acceptor() noexcept
     assert(!servicing_ && !callback_active_);
     close();
 }
-void snet::Acceptor::on_accept(AcceptCallback callback) { accept_callback_ = std::move(callback); }
-void snet::Acceptor::on_error(ErrorCallback callback) { error_callback_ = std::move(callback); }
+void snet::Acceptor::on_accept(AcceptCallback callback)
+{
+    replace(accept_callback_, std::move(callback));
+    if (state_ == State::active && !has_receiver())
+        pause_accepting();
+}
+void snet::Acceptor::on_error(ErrorCallback callback) { replace(error_callback_, std::move(callback)); }
 void snet::Acceptor::start()
 {
     if (state_ != State::created)
         throw std::logic_error("Acceptor cannot be activated twice or after closure");
-    if (!accept_callback_)
+    if (!has_receiver())
         throw std::logic_error("Acceptance requires a receiver");
     if (!paused_) {
         channel_.set_events(EPOLLIN);
@@ -74,7 +89,7 @@ void snet::Acceptor::resume_accepting()
 {
     if (state_ == State::closed)
         throw std::logic_error("Closed acceptor cannot resume");
-    if (!accept_callback_)
+    if (!has_receiver())
         throw std::logic_error("Acceptance requires a receiver");
     if (state_ == State::active && paused_) {
         channel_.set_events(EPOLLIN);
@@ -104,5 +119,29 @@ void snet::Acceptor::detach() noexcept
     }
     registered_ = false;
 }
-void snet::Acceptor::handle_accept() {}
+bool snet::Acceptor::has_receiver() const noexcept
+{
+    return static_cast<bool>(accept_callback_.callback) || (accept_callback_.executing && !accept_callback_.replaced);
+}
+bool snet::Acceptor::accepting() const noexcept { return state_ == State::active && !paused_ && has_receiver(); }
+void snet::Acceptor::handle_accept()
+{
+    if (!accepting())
+        return;
+    FlagGuard guard(servicing_);
+    for (std::size_t calls = 0; calls < options_.accept_call_budget && accepting(); ++calls) {
+        const int fd = ::accept4(socket_.get_fd(), nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+        if (fd >= 0) {
+            Socket client(fd);
+            invoke(accept_callback_, std::move(client));
+            continue;
+        }
+        const int error = errno;
+        if (error == EAGAIN || error == EWOULDBLOCK)
+            return;
+        if (error == EINTR)
+            continue;
+        throw std::system_error(error, std::system_category(), "accept4");
+    }
+}
 void snet::Acceptor::handle_error() {}
