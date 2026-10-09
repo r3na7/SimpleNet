@@ -167,3 +167,164 @@ TEST(TcpConnectionTest, ClosedCallbackRetainedDuringSelfClear)
     tcp_test::drive(loop, [&] { return called; });
     EXPECT_TRUE(observed.expired());
 }
+
+TEST(TcpConnectionTest, OutputLimitAcceptsPrefix)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::ConnectionOptions options;
+    options.output_limit = 8;
+    options.output_low_watermark = 3;
+    snet::TcpConnection connection(loop, std::move(pair.accepted), options);
+    connection.start();
+    auto result = connection.send(bytes("0123456789"));
+    EXPECT_EQ(result.status, snet::SendStatus::would_block);
+    EXPECT_EQ(result.accepted_bytes, 8u);
+    EXPECT_FALSE(result.error);
+    auto next = connection.send(bytes("ab"));
+    EXPECT_EQ(next.status, snet::SendStatus::would_block);
+    EXPECT_EQ(next.accepted_bytes, 0u);
+    EXPECT_TRUE(pair.read().empty());
+    std::string received;
+    tcp_test::drive(loop, [&] {
+        received += pair.read();
+        return received.size() == 8;
+    });
+    EXPECT_EQ(received, "01234567");
+}
+
+TEST(TcpConnectionTest, AcceptedCopiesSource)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    connection.start();
+    {
+        std::string source = "original";
+        auto result = connection.send(bytes(source));
+        EXPECT_EQ(result.status, snet::SendStatus::accepted);
+        EXPECT_EQ(result.accepted_bytes, 8u);
+        source.assign("changed!");
+    }
+    std::string received;
+    tcp_test::drive(loop, [&] {
+        received += pair.read();
+        return received.size() == 8;
+    });
+    EXPECT_EQ(received, "original");
+}
+
+TEST(TcpConnectionTest, EmptySendHasNoWorkOrNotification)
+{
+    snet::EventLoop loop;
+    loop.set_work_budget(1);
+    tcp_test::Pair pair;
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    connection.start();
+    int calls = 0;
+    connection.on_output_available([&](auto &) { ++calls; });
+    auto result = connection.send({});
+    EXPECT_EQ(result.status, snet::SendStatus::accepted);
+    EXPECT_EQ(result.accepted_bytes, 0u);
+    snet::detail::LoopWork stop(loop, [&] { loop.quit(); });
+    stop.schedule();
+    loop.loop();
+    EXPECT_EQ(loop.iteration_id(), 1u);
+    EXPECT_EQ(calls, 0);
+}
+
+TEST(TcpConnectionTest, OutputThresholdDownCross)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::ConnectionOptions options;
+    options.output_limit = 8;
+    options.output_low_watermark = 3;
+    snet::TcpConnection connection(loop, std::move(pair.accepted), options);
+    connection.start();
+    int notices = 0;
+    connection.on_output_available([&](auto &) { ++notices; });
+    EXPECT_EQ(connection.send(bytes("ABCDEFGH")).accepted_bytes, 8u);
+    std::string received;
+    tcp_test::drive(loop, [&] {
+        received += pair.read();
+        return received.size() == 8 && notices == 1;
+    });
+    EXPECT_EQ(connection.send(bytes("ij")).accepted_bytes, 2u);
+    tcp_test::drive(loop, [&] {
+        received += pair.read();
+        return received.size() == 10;
+    });
+    EXPECT_EQ(notices, 1);
+    EXPECT_EQ(connection.send(bytes("KLMNOPQR")).accepted_bytes, 8u);
+    tcp_test::drive(loop, [&] {
+        received += pair.read();
+        return received.size() == 18 && notices == 2;
+    });
+    EXPECT_EQ(received, "ABCDEFGHijKLMNOPQR");
+}
+
+TEST(TcpConnectionTest, ZeroThresholdNotifiesOnDrain)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::ConnectionOptions options;
+    options.output_low_watermark = 0;
+    snet::TcpConnection connection(loop, std::move(pair.accepted), options);
+    connection.start();
+    int notices = 0;
+    connection.on_output_available([&](auto &) { ++notices; });
+    EXPECT_EQ(connection.send(bytes("x")).accepted_bytes, 1u);
+    std::string received;
+    tcp_test::drive(loop, [&] {
+        received += pair.read();
+        return received == "x" && notices == 1;
+    });
+}
+
+TEST(TcpConnectionTest, LargeStreamProgresses)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::ConnectionOptions options;
+    options.output_limit = 8;
+    options.output_low_watermark = 3;
+    snet::TcpConnection connection(loop, std::move(pair.accepted), options);
+    connection.start();
+    const std::string source(129, 'X');
+    std::size_t offset = 0;
+    auto produce = [&] {
+        offset += connection.send(bytes(source).subspan(offset)).accepted_bytes;
+        if (offset == source.size())
+            connection.finish_sending();
+    };
+    connection.on_output_available([&](auto &) { produce(); });
+    produce();
+    std::string received;
+    tcp_test::drive(loop, [&] {
+        received += pair.read();
+        return pair.eof;
+    });
+    EXPECT_EQ(offset, source.size());
+    EXPECT_EQ(received, source);
+}
+
+TEST(TcpConnectionTest, FinishDrainsBeforeShutdown)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    connection.start();
+    EXPECT_EQ(connection.send(bytes("response")).accepted_bytes, 8u);
+    connection.finish_sending();
+    connection.finish_sending();
+    EXPECT_EQ(connection.send(bytes("late")).status, snet::SendStatus::sending_finished);
+    EXPECT_EQ(connection.send({}).status, snet::SendStatus::sending_finished);
+    std::string received;
+    tcp_test::drive(loop, [&] {
+        received += pair.read();
+        return pair.eof;
+    });
+    EXPECT_EQ(received, "response");
+    pair.send("our receive side is still open");
+}
