@@ -4,6 +4,7 @@
 The current API provides socket address values, socket ownership, a contiguous byte buffer, an established TCP connection, and a single-threaded Reactor
 based on `epoll`.
 
+- `snet::Acceptor` accepts clients from an existing non-blocking TCP listening socket.
 - `snet::TcpConnection` owns an established TCP socket and services its input/output queues.
 - `snet::Buffer` stores bytes and exposes contiguous readable and prepared writable regions.
 - `snet::Socket` owns an already-open socket descriptor and closes it through RAII.
@@ -14,8 +15,8 @@ based on `epoll`.
 
 Channels do not own monitored fds. Low-level users control I/O themselves;
 `TcpConnection` supplies bounded non-blocking I/O and connection lifecycle management.
-Socket establishment and the owner lifetime remain explicit. Acceptor and TcpServer
-are planned next. See the [TCP connection guide](docs/tcp-connection.md) and
+Socket establishment and the owner lifetime remain explicit. Acceptor is available;
+TcpServer is the next assembly component. See the [TCP connection guide](docs/tcp-connection.md), [acceptance guide](docs/acceptor.md), and
 [Reactor guide](docs/reactor.md).
 
 ## Socket ownership
@@ -124,7 +125,7 @@ When using CMake, link your application to the `SimpleNet` target.
 
 ## Tests
 
-Reactor, Socket, Buffer, and TCP connection regression tests are built by default and use GoogleTest 1.17.0.
+Reactor, Socket, Buffer, TCP connection, and Acceptor regression tests are built by default and use GoogleTest 1.17.0.
 CMake downloads and builds this pinned release through FetchContent; a separate
 GoogleTest installation is not needed. The first configuration requires Git
 and internet access. GoogleMock and GoogleTest installation targets are disabled.

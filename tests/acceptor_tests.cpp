@@ -307,3 +307,46 @@ TEST(AcceptorTest, ReceiverReplacementSurvivesThrow)
     tcp_test::drive(loop, [&] { return next == 1; });
     EXPECT_EQ(first, 1);
 }
+
+TEST(AcceptorTest, StandaloneHandoffToTcpConnectionServesRequest)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    std::unique_ptr<snet::TcpConnection> connection;
+    snet::Acceptor acceptor(loop, std::move(listener.socket));
+    bool closed = false;
+    int accepted = 0;
+    acceptor.on_accept([&](snet::Socket socket) {
+        ++accepted;
+        acceptor.close();
+        connection = std::make_unique<snet::TcpConnection>(loop, std::move(socket));
+        connection->on_data([](auto &current) {
+            current.consume_input(current.input_data().size());
+            EXPECT_EQ(current.send(tcp_test::bytes("ack")).status, snet::SendStatus::accepted);
+            current.finish_sending();
+        });
+        connection->on_closed([&](auto &, std::error_code error) {
+            EXPECT_FALSE(error);
+            closed = true;
+        });
+        connection->start();
+    });
+    acceptor.start();
+    auto peer = listener.connect();
+    ASSERT_EQ(::send(peer.get_fd(), "q", 1, MSG_NOSIGNAL), 1);
+    tcp_test::check(::shutdown(peer.get_fd(), SHUT_WR), "shutdown");
+    bool eof = false;
+    std::string reply;
+    tcp_test::drive(loop, [&] {
+        char bytes[8];
+        auto n = ::recv(peer.get_fd(), bytes, sizeof(bytes), MSG_DONTWAIT);
+        if (n > 0)
+            reply.append(bytes, static_cast<std::size_t>(n));
+        else if (n == 0)
+            eof = true;
+        return closed && eof;
+    });
+    EXPECT_EQ(accepted, 1);
+    EXPECT_EQ(reply, "ack");
+    EXPECT_TRUE(connection->input_data().empty());
+}

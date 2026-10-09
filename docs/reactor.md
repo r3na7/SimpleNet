@@ -301,3 +301,12 @@ and shares I/O budgets between socket dispatch and work via `iteration_id()`.
 Standalone users own the connection until processing has returned; the loop does
 not destroy it. See the [TCP connection guide](tcp-connection.md) for activation,
 backpressure, handler replacement, exception and teardown contracts.
+
+## Accepting high-level TCP connections
+
+`Acceptor` owns an existing non-blocking TCP listener and its stable Channel.
+It transfers accepted Socket ownership directly to an application receiver;
+EventLoop owns neither listener service objects nor client connections.
+Acceptance uses LT readiness and a bounded number of attempts per dispatch.
+Resource exhaustion removes registration before an application notification;
+explicit resume is required. See the [acceptance guide](acceptor.md).

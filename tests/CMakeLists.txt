@@ -71,3 +71,7 @@ add_executable(simplenet_acceptor_syscall_tests acceptor_syscall_tests.cpp)
 target_link_libraries(simplenet_acceptor_syscall_tests PRIVATE SimpleNet GTest::gtest_main)
 target_link_options(simplenet_acceptor_syscall_tests PRIVATE -Wl,--wrap=epoll_ctl -Wl,--wrap=accept4 -Wl,--wrap=getsockopt -Wl,--wrap=epoll_wait)
 gtest_discover_tests(simplenet_acceptor_syscall_tests TEST_PREFIX acceptsys. PROPERTIES TIMEOUT 10)
+
+add_executable(simplenet_acceptor_allocation_tests acceptor_allocation_tests.cpp)
+target_link_libraries(simplenet_acceptor_allocation_tests PRIVATE SimpleNet GTest::gtest_main)
+gtest_discover_tests(simplenet_acceptor_allocation_tests TEST_PREFIX acceptalloc. PROPERTIES TIMEOUT 10)
