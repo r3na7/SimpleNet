@@ -5,7 +5,10 @@
 #include "Acceptor.hpp"
 #include "TcpConnection.hpp"
 #include "detail/LoopCleanup.hpp"
+#include <cstdint>
 #include <functional>
+#include <memory>
+#include <unordered_map>
 
 namespace snet
 {
@@ -63,6 +66,18 @@ public:
     void stop();
 
 private:
+    struct OwnedConnection {
+        TcpServer *server;
+        std::uint64_t id;
+        std::unique_ptr<TcpConnection> connection;
+        OwnedConnection *next_closed = nullptr;
+        bool marked = false;
+        OwnedConnection(TcpServer &owner, std::uint64_t value, std::unique_ptr<TcpConnection> client) noexcept
+            : server(&owner), id(value), connection(std::move(client))
+        {
+        }
+    };
+    static void mark_closed(void *, TcpConnection &) noexcept;
     static TcpServerOptions checked_options(TcpServerOptions);
     static void cleanup_entry(void *, detail::CleanupReason) noexcept;
     void cleanup(detail::CleanupReason) noexcept;
@@ -71,6 +86,9 @@ private:
     EventLoop &loop_;
     const TcpServerOptions options_;
     Acceptor acceptor_;
+    std::unordered_map<std::uint64_t, OwnedConnection> connections_;
+    OwnedConnection *closed_ = nullptr;
+    std::uint64_t next_id_ = 1;
     bool started_ = false, stopped_ = false, servicing_ = false, callback_active_ = false;
     ConnectionCallback connection_callback_;
     AcceptErrorCallback error_callback_;
