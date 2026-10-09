@@ -110,6 +110,26 @@ extern "C" ssize_t __wrap_recv(int fd, void *data, std::size_t size, int flags)
     return __real_recv(fd, data, size, flags);
 }
 
+namespace
+{
+void warm_batch(snet::EventLoop &loop)
+{
+    snet::Socket event(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC));
+    snet::Channel warm(event.get_fd());
+    warm.set_events(EPOLLIN);
+    warm.set_read_callback([&] {
+        std::uint64_t value;
+        tcp_test::check(static_cast<int>(::read(event.get_fd(), &value, sizeof(value))), "eventfd read");
+        loop.quit();
+    });
+    loop.update_channel(&warm);
+    std::uint64_t one = 1;
+    tcp_test::check(static_cast<int>(::write(event.get_fd(), &one, sizeof(one))), "eventfd write");
+    loop.loop();
+    loop.remove_channel(&warm); // Batch storage is prepared before the allocation gate.
+}
+} // namespace
+
 TEST(TcpAllocationTest, SendBadAllocAcceptsNothingAndPreservesEarlierPrefix)
 {
     snet::EventLoop loop;
@@ -143,19 +163,7 @@ TEST(TcpAllocationTest, SendBadAllocAcceptsNothingAndPreservesEarlierPrefix)
 TEST(TcpAllocationTest, RecvBadAllocLeavesKernelBytes)
 {
     snet::EventLoop loop;
-    snet::Socket event(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC));
-    snet::Channel warm(event.get_fd());
-    warm.set_events(EPOLLIN);
-    warm.set_read_callback([&] {
-        std::uint64_t value;
-        tcp_test::check(static_cast<int>(::read(event.get_fd(), &value, sizeof(value))), "eventfd read");
-        loop.quit();
-    });
-    loop.update_channel(&warm);
-    std::uint64_t one = 1;
-    tcp_test::check(static_cast<int>(::write(event.get_fd(), &one, sizeof(one))), "eventfd write");
-    loop.loop();
-    loop.remove_channel(&warm); // Batch storage is prepared before the allocation gate.
+    warm_batch(loop);
     tcp_test::Pair pair;
     observed_fd = pair.accepted.get_fd();
     receives = 0;
@@ -257,4 +265,37 @@ TEST(TcpAllocationTest, CallbackSetterAllocationFailurePreservesHandler)
     pair.send("ok");
     tcp_test::drive(loop, [&] { return original == 1; });
     EXPECT_EQ(replacement, 0);
+}
+
+TEST(TcpAllocationTest, FinalResetReadPreparationFailureStillCloses)
+{
+    snet::EventLoop loop;
+    warm_batch(loop);
+    tcp_test::Pair pair;
+    int fd = pair.accepted.get_fd();
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    connection.start();
+    pair.send("final");
+    linger reset{1, 0};
+    tcp_test::check(::setsockopt(pair.peer.get_fd(), SOL_SOCKET, SO_LINGER, &reset, sizeof(reset)), "linger");
+    pair.peer.close();
+    char peek[8];
+    ASSERT_EQ(::recv(fd, peek, sizeof(peek), MSG_PEEK | MSG_DONTWAIT), 5);
+    bool failed = false;
+    int closed = 0;
+    connection.on_closed([&](auto &, std::error_code) { ++closed; });
+    try {
+        AllocationGate gate(0);
+        loop.loop();
+    } catch (const std::bad_alloc &) {
+        failed = true;
+    }
+    EXPECT_TRUE(failed);
+    EXPECT_EQ(::fcntl(fd, F_GETFD), -1);
+    EXPECT_EQ(errno, EBADF);
+    EXPECT_TRUE(connection.input_data().empty());
+    snet::detail::LoopWork stop(loop, [&] { loop.quit(); });
+    stop.schedule();
+    loop.loop();
+    EXPECT_EQ(closed, 0);
 }

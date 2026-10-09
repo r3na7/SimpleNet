@@ -164,7 +164,7 @@ private:
     void sync_interest();
     void detach() noexcept;
     void close_impl(bool notify) noexcept;
-    void handle_read();
+    void handle_read(int pending_error = 0);
     void handle_write();
     void handle_error();
     void run_work();

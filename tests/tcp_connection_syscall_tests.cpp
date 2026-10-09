@@ -13,7 +13,7 @@ extern "C" int __real_epoll_ctl(int, int, int, epoll_event *);
 namespace
 {
 int target_fd = -1;
-bool fail_add = false, fail_del = false;
+bool fail_add = false, fail_del = false, fail_mod = false;
 int send_interrupts = 0, recv_interrupts = 0, shutdown_interrupts = 0;
 snet::EventLoop *observed_loop = nullptr;
 std::vector<std::pair<std::uint64_t, std::size_t>> send_trace;
@@ -32,7 +32,7 @@ struct Interception {
     explicit Interception(int fd)
     {
         target_fd = fd;
-        fail_del = false;
+        fail_del = fail_mod = false;
         send_interrupts = recv_interrupts = shutdown_interrupts = 0;
         observed_loop = nullptr;
         send_trace.clear();
@@ -61,6 +61,11 @@ extern "C" int __wrap_epoll_ctl(int epoll, int op, int fd, epoll_event *event)
 {
     if (fd == target_fd && op == EPOLL_CTL_DEL && fail_del) {
         errno = EIO;
+        return -1;
+    }
+    if (fd == target_fd && op == EPOLL_CTL_MOD && fail_mod) {
+        fail_mod = false;
+        errno = ENOMEM;
         return -1;
     }
     if (fd == target_fd && op == EPOLL_CTL_ADD && fail_add) {
@@ -471,6 +476,7 @@ TEST(TcpSyscallTest, PausedInputAndBlockedOutputPeerReset)
         ++closed;
     });
     tcp_test::drive(loop, [&] { return closed == 1; });
+    EXPECT_EQ(recv_calls, 0);
     EXPECT_LE(send_calls, 3);
     int previous = send_calls;
     stop.schedule();
@@ -516,4 +522,47 @@ TEST(TcpSyscallTest, PausedInputGracefulHangupDoesNotSpin)
     }
     EXPECT_EQ(send_calls, calls);
     EXPECT_EQ(last_events, 0u);
+}
+
+TEST(TcpSyscallTest, RestartRetriesWriteInterestAfterFailedMod)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    Interception interception(pair.accepted.get_fd());
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    connection.start();
+    eagain_after = 0;
+    fail_mod = true;
+    connection.send(tcp_test::bytes("queued"));
+    EXPECT_THROW(loop.loop(), std::system_error);
+    EXPECT_EQ(send_calls, 1);
+    EXPECT_TRUE(pair.read().empty());
+    std::string received;
+    tcp_test::drive(loop, [&] {
+        received += pair.read();
+        return received == "queued";
+    });
+    EXPECT_EQ(received, "queued");
+}
+
+TEST(TcpSyscallTest, RestartRetriesWriteInterestAfterFailedAdd)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    Interception interception(pair.accepted.get_fd());
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    connection.pause_reading();
+    connection.start();
+    eagain_after = 0;
+    fail_add = true;
+    connection.send(tcp_test::bytes("queued"));
+    EXPECT_THROW(loop.loop(), std::system_error);
+    EXPECT_EQ(send_calls, 1);
+    EXPECT_TRUE(pair.read().empty());
+    std::string received;
+    tcp_test::drive(loop, [&] {
+        received += pair.read();
+        return received == "queued";
+    });
+    EXPECT_EQ(received, "queued");
 }

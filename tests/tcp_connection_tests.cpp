@@ -909,3 +909,66 @@ TEST(TcpConnectionTest, SlowEchoPumpsRetainedInputOnOutputAvailability)
     EXPECT_EQ(received, source);
     EXPECT_GT(pauses, 0);
 }
+
+TEST(TcpConnectionTest, ResetOffersReadableFinalBytesBeforeClosure)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    int fd = pair.accepted.get_fd();
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    connection.start();
+    const std::string payload = "before-reset-1234";
+    pair.send(payload);
+    linger reset{1, 0};
+    tcp_test::check(::setsockopt(pair.peer.get_fd(), SOL_SOCKET, SO_LINGER, &reset, sizeof(reset)), "linger");
+    pair.peer.close();
+    char peek[32];
+    ASSERT_EQ(::recv(fd, peek, sizeof(peek), MSG_PEEK | MSG_DONTWAIT), static_cast<ssize_t>(payload.size()));
+    std::vector<std::string> events;
+    connection.on_data([&](auto &self) {
+        events.push_back("data");
+        EXPECT_EQ(tcp_test::text(self.input_data()), payload);
+        auto result = self.send(tcp_test::bytes("reply"));
+        EXPECT_EQ(result.status, snet::SendStatus::io_error);
+        EXPECT_EQ(result.error.value(), ECONNRESET);
+    });
+    connection.on_eof([&](auto &) { events.push_back("eof"); });
+    connection.on_closed([&](auto &, std::error_code error) {
+        EXPECT_EQ(error.value(), ECONNRESET);
+        events.push_back("closed");
+    });
+    tcp_test::drive(loop, [&] { return !events.empty() && events.back() == "closed"; });
+    EXPECT_EQ(events, (std::vector<std::string>{"data", "closed"}));
+    EXPECT_EQ(tcp_test::text(connection.input_data()), payload);
+}
+
+TEST(TcpConnectionTest, FinalResetDataThrowStillClosesAndSkipsNotifications)
+{
+    snet::EventLoop loop;
+    tcp_test::Pair pair;
+    int fd = pair.accepted.get_fd();
+    snet::TcpConnection connection(loop, std::move(pair.accepted));
+    connection.start();
+    pair.send("final");
+    linger reset{1, 0};
+    tcp_test::check(::setsockopt(pair.peer.get_fd(), SOL_SOCKET, SO_LINGER, &reset, sizeof(reset)), "linger");
+    pair.peer.close();
+    char peek[8];
+    ASSERT_EQ(::recv(fd, peek, sizeof(peek), MSG_PEEK | MSG_DONTWAIT), 5);
+    int data = 0, closed = 0;
+    connection.on_data([&](auto &self) {
+        ++data;
+        EXPECT_EQ(tcp_test::text(self.input_data()), "final");
+        throw std::runtime_error("app");
+    });
+    connection.on_closed([&](auto &, std::error_code) { ++closed; });
+    snet::detail::LoopWork stop(loop, [&] { loop.quit(); });
+    stop.schedule();
+    EXPECT_THROW(loop.loop(), std::runtime_error);
+    EXPECT_EQ(data, 1);
+    EXPECT_EQ(::fcntl(fd, F_GETFD), -1);
+    EXPECT_EQ(errno, EBADF);
+    stop.schedule();
+    loop.loop();
+    EXPECT_EQ(closed, 0);
+}

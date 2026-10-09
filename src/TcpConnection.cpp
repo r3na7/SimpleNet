@@ -165,6 +165,8 @@ void snet::TcpConnection::run_work()
     } catch (...) {
         if (state_ == State::closed)
             cancel_closed_work();
+        else if (state_ == State::active)
+            work_.schedule(); // Retry unapplied interest after ADD/MOD or callback failure.
         throw;
     }
 }
@@ -232,7 +234,7 @@ void snet::TcpConnection::on_data(Callback callback) { replace(data_callback_, s
 void snet::TcpConnection::on_eof(Callback callback) { replace(eof_callback_, std::move(callback)); }
 void snet::TcpConnection::on_output_available(Callback callback) { replace(output_callback_, std::move(callback)); }
 void snet::TcpConnection::on_closed(CloseCallback callback) { replace(closed_callback_, std::move(callback)); }
-void snet::TcpConnection::handle_read()
+void snet::TcpConnection::handle_read(int pending_error)
 {
     if (state_ != State::active)
         return;
@@ -266,6 +268,8 @@ void snet::TcpConnection::handle_read()
             mark_socket_error(error);
             break;
         }
+        if (pending_error && state_ == State::active)
+            mark_socket_error(pending_error);
         if (added)
             invoke(data_callback_);
         if (state_ == State::failing)
@@ -278,6 +282,8 @@ void snet::TcpConnection::handle_read()
         maybe_auto_close();
         sync_interest();
     } catch (...) {
+        if (pending_error && state_ == State::active)
+            mark_socket_error(pending_error);
         if (state_ == State::failing)
             close_impl(true);
         eof_pending_ = false;
@@ -303,13 +309,21 @@ void snet::TcpConnection::handle_error()
 {
     if (state_ != State::active)
         return;
-    FlagGuard guard(servicing_);
     int error = 0;
     socklen_t size = sizeof(error);
     if (::getsockopt(socket_.get_fd(), SOL_SOCKET, SO_ERROR, &error, &size) == -1)
         throw std::system_error(errno, std::system_category(), "getsockopt SO_ERROR");
-    if (error != 0)
-        fail_socket(error);
+    if (error != 0) {
+        // SO_ERROR is consumed by getsockopt; retain it before final recv attempts.
+        if (!terminal_error_)
+            terminal_error_ = std::error_code(error, std::system_category());
+        if (can_read())
+            handle_read(error); // Owns the service guard and respects existing read quotas.
+        else {
+            FlagGuard guard(servicing_);
+            fail_socket(error);
+        }
+    }
 }
 
 void snet::TcpConnection::refresh_budgets() noexcept

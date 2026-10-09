@@ -102,7 +102,9 @@ on retry. A closed connection cancels an ordinary pending output notification.
 If read interest is paused/full/finished and no blocked output needs monitoring,
 the Channel is removed rather than registered with zero useful interest. Idle
 EOF/reset detection then waits for restored useful interest. A registered
-EPOLLERR is checked with SO_ERROR even when reading is paused; HUP alone is not
+EPOLLERR is checked with SO_ERROR even when reading is paused. When reading
+is permitted, an error allows one bounded final receive group before closure;
+the known error is preserved even though getsockopt consumes SO_ERROR. HUP alone is not
 EOF and does not override the read pause or capacity limit.
 
 ## EOF, finish and close
@@ -130,6 +132,8 @@ Unexpected epoll deregistration failure is an invariant failure: diagnostics
 include the syscall, fd, and errno, then terminate. Destruction cannot proceed
 while Poller retains a pointer to freed Channel memory. Other Reactor bookkeeping
 failures propagate as exceptions; they are distinct from ordinary peer I/O errors.
+An internal ADD/MOD failure preserves prepared reconciliation work, so restarting
+the loop retries the unapplied mask rather than stranding accepted output.
 
 ## Application callbacks and exceptions
 
