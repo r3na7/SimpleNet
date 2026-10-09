@@ -20,6 +20,63 @@ Socket establishment and the owner lifetime remain explicit. TcpServer assembles
 these components on a caller-owned loop; see the [server guide](docs/tcp-server.md). See the [TCP connection guide](docs/tcp-connection.md), [acceptance guide](docs/acceptor.md), and
 [Reactor guide](docs/reactor.md).
 
+## Quick start: TCP echo
+
+```sh
+cmake -S . -B build -DSIMPLENET_BUILD_EXAMPLES=ON
+cmake --build build -j2
+./build/examples/snet_echo_server --host 127.0.0.1 --port 5555
+```
+
+In a second terminal:
+
+```sh
+python3 examples/slow_echo_client.py --host 127.0.0.1 --port 5555 --clients 2
+```
+
+The client checks exact binary echo and EOF for two simultaneous slowly reading
+connections. Use `--host ::1` in both commands for IPv6; use Ctrl+C to stop the server.
+EOF drains a client's response; signal stop closes immediately and may discard output.
+See the [demonstration guide](docs/examples.md) for the queue/data flow and policies,
+and [v1 readiness](docs/v1-status.md) for verification and supported limits.
+
+CMake examples are optional (OFF by default). The server is C++ only; the verification
+client and the subprocess tests require Python 3.8+ with no third-party packages.
+The default test build downloads GoogleTest; offline configuration is described below.
+
+## Application integration
+
+Use the library as a CMake subdirectory:
+
+```cmake
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(SIMPLENET_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SIMPLENET_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+add_subdirectory(/path/to/SimpleNet snet)
+add_executable(my_server main.cpp)
+target_link_libraries(my_server PRIVATE SimpleNet)
+```
+
+Include `<simplenet/Simplenet.hpp>`; the target supplies C++20 and public include paths.
+A listener is explicitly prepared with socket/options/bind/listen, then handed to
+TcpServer. Configure clients before start:
+
+```cpp
+snet::EventLoop loop;
+snet::TcpServer server(loop, std::move(listening_socket));
+server.on_connection([](snet::TcpConnection& client) {
+    // Install on_data/on_eof/on_output_available/on_closed here.
+});
+server.start();
+loop.loop();
+```
+
+The complete echo application is in `examples/echo_server.cpp`. The library offers
+independent low-level components as well as TcpServer; it does not own an application
+thread or protocol. All use is in one Reactor thread. TCP/IPv4/IPv6 are the supported
+networking scope; outgoing socket establishment, UDP, TLS and HTTP are not provided.
+No install/find_package package is currently exported.
+
 ## Socket ownership
 
 `Socket` takes exclusive ownership of an already-open socket. It does not create
@@ -138,6 +195,10 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+Enable `-DSIMPLENET_BUILD_EXAMPLES=ON` to include signal-owner and executable
+subprocess tests; this combination requires a Python 3.8+ interpreter. Subprocess
+scenarios have a 45-second outer timeout; the client's internal deadline is 15 seconds.
+
 CMake discovers GoogleTest cases automatically. Each case runs in a separate
 process with a ten-second timeout. Tests use real
 Linux eventfd descriptors, pipes, socket pairs, and signals. They cover registration
@@ -172,8 +233,8 @@ cmake -S . -B build -DSIMPLENET_BUILD_DOCS=ON
 cmake --build build --target docs
 ```
 
-Open `build/docs/html/index.html`. The main page, Reactor guide, and API reference
-are generated from README, `docs/reactor.md`, and the public headers.
+Open `build/docs/html/index.html`. The main page, component/demonstration guides, readiness checklist and API reference
+are generated from README, `docs/`, and the public headers selected in Doxyfile.in.
 Comments document parameters, return values, preconditions, exceptions,
 resource ownership, and limitations of the current implementation. Doxygen
 warnings are saved to `build/doxygen-warnings.log` and cause generation to fail.
