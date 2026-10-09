@@ -11,9 +11,12 @@ snet::detail::LoopWork::LoopWork(EventLoop &loop, std::function<void()> action)
 {
     if (!action_)
         throw std::invalid_argument("Empty work action");
+
     all_next_ = loop_.all_work_;
+
     if (all_next_)
         all_next_->all_prev_ = this;
+
     loop_.all_work_ = this;
 }
 
@@ -21,10 +24,12 @@ snet::detail::LoopWork::~LoopWork() noexcept
 {
     assert(!executing_);
     cancel();
+
     if (all_prev_)
         all_prev_->all_next_ = all_next_;
     else
         loop_.all_work_ = all_next_;
+
     if (all_next_)
         all_next_->all_prev_ = all_prev_;
 }

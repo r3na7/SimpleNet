@@ -33,6 +33,7 @@ public:
     Socket(const Socket &) = delete;
     /// @brief Exclusive ownership cannot be copy-assigned.
     Socket &operator=(const Socket &) = delete;
+
     /**
      * @brief Transfers ownership without moving the kernel resource.
      * @param other The source, left empty after transfer.
@@ -45,17 +46,20 @@ public:
      * @pre The destination's old descriptor is not registered in a Poller.
      */
     Socket &operator=(Socket &&other) noexcept;
+
     /**
      * @brief Returns borrowed access to the descriptor without transferring ownership.
      * @return The owned descriptor, or -1 when empty.
      * @warning Do not close, replace, or independently adopt this descriptor.
      */
     int get_fd() const noexcept;
+
     /**
      * @brief Reports whether this wrapper holds a descriptor; does not query the kernel.
      * @return True when the stored descriptor is nonnegative.
      */
     bool is_open() const noexcept;
+
     /**
      * @brief Makes the object empty and attempts to close its descriptor at most once.
      * @pre Any associated Channel has been removed from its Poller.

@@ -156,6 +156,7 @@ private:
     detail::LoopCleanup *cleanup_head_ = nullptr;
     bool cleanup_requested_ = false;
     bool cleaning_ = false;
+
     void schedule_work(detail::LoopWork &work) noexcept;
     void cancel_work(detail::LoopWork &work) noexcept;
     void run_work();
@@ -164,6 +165,7 @@ private:
     detail::WorkQueue *phase_ = &queues_[1];
     std::size_t work_budget_ = 64;
     std::uint64_t iteration_id_ = 0;
+
     detail::LoopWork *all_work_ = nullptr;
     Poller poller_;
 

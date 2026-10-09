@@ -17,6 +17,7 @@ namespace snet
 struct AcceptorOptions {
     std::size_t accept_call_budget = 32; ///< Maximum accept4 attempts per dispatch; positive.
 };
+
 /** @brief Stable-address owner of a non-blocking TCP listening socket and Channel.
  * @pre Socket is exclusively owned, listening TCP IPv4/IPv6 and non-blocking.
  * @pre All operations use one loop thread; EventLoop outlives this object.
@@ -70,35 +71,44 @@ private:
         Function callback;
         bool executing = false, replaced = false;
     };
+
     template <class Function> void replace(Slot<Function> &slot, Function callback) noexcept
     {
         if (slot.executing)
             slot.replaced = true;
+
         slot.callback = std::move(callback);
     }
+
     template <class Function, class... Args> void invoke(Slot<Function> &slot, Args &&...args)
     {
         if (!slot.callback)
             return;
+
         assert(!callback_active_);
         auto callable = std::move(slot.callback);
+
         slot.executing = true;
         slot.replaced = false;
         callback_active_ = true;
         auto restore = [&]() noexcept {
             if (!slot.replaced)
                 slot.callback = std::move(callable);
+
             slot.executing = false;
             callback_active_ = false;
         };
+
         try {
             callable(std::forward<Args>(args)...);
         } catch (...) {
             restore();
             throw;
         }
+
         restore();
     }
+
     bool has_receiver() const noexcept;
     bool accepting() const noexcept;
 
@@ -111,6 +121,7 @@ private:
     Channel channel_;
     State state_ = State::created;
     bool paused_ = false, registered_ = false, servicing_ = false, callback_active_ = false;
+
     Slot<AcceptCallback> accept_callback_;
     Slot<ErrorCallback> error_callback_;
 };

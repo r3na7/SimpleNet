@@ -47,12 +47,14 @@ public:
      * @return The descriptor number without checking whether it is open.
      */
     int get_fd() const noexcept;
+
     /**
      * @brief Returns the requested interest mask.
      * @return epoll bits; kernel state is not queried.
      * @note Until update_channel() succeeds, the mask may differ from the registration.
      */
     uint32_t get_events() const noexcept;
+
     /**
      * @brief Returns the last received event mask.
      * @return The mask set by Poller::poll(), or the initial zero.
@@ -170,6 +172,7 @@ private:
 
     bool dispatch_cancelled_ = false;
     bool dispatching_ = false;
+
     std::function<void()> *active_callback_ = nullptr;
 };
 

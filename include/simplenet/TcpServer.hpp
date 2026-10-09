@@ -19,6 +19,7 @@ struct TcpServerOptions {
     ConnectionOptions connection; ///< Queue limits and per-iteration I/O budgets.
     AcceptorOptions acceptor;     ///< Listening acceptance attempt budget.
 };
+
 /** @brief Stable-address owner of an Acceptor and its TcpConnection objects.
  * @pre Socket is exclusively owned, non-blocking listening TCP IPv4/IPv6.
  * @pre All use is in one thread; EventLoop outlives the server.
@@ -72,49 +73,62 @@ private:
         Function callback;
         bool executing = false, replaced = false;
     };
+
     template <class Function> void replace(Slot<Function> &slot, Function callback) noexcept
     {
         if (slot.executing)
             slot.replaced = true;
+
         slot.callback = std::move(callback);
     }
+
     template <class Function, class... Args> void invoke(Slot<Function> &slot, Args &&...args)
     {
         if (!slot.callback)
             return;
+
         assert(!callback_active_);
         auto callable = std::move(slot.callback);
+
         slot.executing = true;
         slot.replaced = false;
         callback_active_ = true;
         auto restore = [&]() noexcept {
             if (!slot.replaced)
                 slot.callback = std::move(callable);
+
             slot.executing = false;
             callback_active_ = false;
         };
+
         try {
             callable(std::forward<Args>(args)...);
         } catch (...) {
             restore();
             throw;
         }
+
         restore();
     }
+
     bool has_configuration() const noexcept;
+
     struct OwnedConnection {
         TcpServer *server;
         std::uint64_t id;
         std::unique_ptr<TcpConnection> connection;
         OwnedConnection *next_closed = nullptr;
         bool marked = false;
+
         OwnedConnection(TcpServer &owner, std::uint64_t value, std::unique_ptr<TcpConnection> client) noexcept
             : server(&owner), id(value), connection(std::move(client))
         {
         }
     };
+
     static void mark_closed(void *, TcpConnection &) noexcept;
     static TcpServerOptions checked_options(TcpServerOptions);
+
     static void cleanup_entry(void *, detail::CleanupReason) noexcept;
     void cleanup(detail::CleanupReason) noexcept;
     void accept(Socket);
@@ -126,6 +140,7 @@ private:
     OwnedConnection *closed_ = nullptr;
     std::uint64_t next_id_ = 1;
     bool started_ = false, stopped_ = false, servicing_ = false, callback_active_ = false;
+
     Slot<ConnectionCallback> connection_callback_;
     Slot<AcceptErrorCallback> error_callback_;
     detail::LoopCleanup cleanup_;

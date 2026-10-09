@@ -16,26 +16,33 @@ int checked_fd(const snet::Socket &socket)
 {
     if (!socket.is_open())
         throw std::invalid_argument("Empty connection socket");
+
     return socket.get_fd();
 }
+
 struct FlagGuard {
     bool &flag;
+
     explicit FlagGuard(bool &f) : flag(f)
     {
         assert(!flag);
         flag = true;
     }
+
     ~FlagGuard() noexcept { flag = false; }
 };
+
 [[noreturn]] void del_failure(int fd, int error) noexcept
 {
     char message[128];
     const char prefix[] = "TcpConnection EPOLL_CTL_DEL fd=";
     auto *at = message;
+
     std::memcpy(at, prefix, sizeof(prefix) - 1);
     at += sizeof(prefix) - 1;
     at = std::to_chars(at, message + sizeof(message) - 16, fd).ptr;
     const char suffix[] = " errno=";
+
     std::memcpy(at, suffix, sizeof(suffix) - 1);
     at += sizeof(suffix) - 1;
     at = std::to_chars(at, message + sizeof(message) - 1, error).ptr;
@@ -51,6 +58,7 @@ snet::ConnectionOptions snet::TcpConnection::checked_options(ConnectionOptions o
         !options.read_byte_budget || !options.read_call_budget || !options.write_byte_budget ||
         !options.write_call_budget)
         throw std::invalid_argument("Invalid connection limits or budgets");
+
     return options;
 }
 
@@ -74,13 +82,16 @@ void snet::TcpConnection::start()
 {
     if (state_ != State::created)
         throw std::logic_error("Connection cannot be activated twice or after closure");
+
     const auto desired = read_paused_ ? 0u : static_cast<unsigned>(EPOLLIN | EPOLLRDHUP);
+
     if (desired) {
         channel_.set_events(desired);
         loop_.update_channel(&channel_);
         registered_ = true;
         applied_events_ = desired;
     }
+
     state_ = State::active;
 }
 
@@ -88,6 +99,7 @@ void snet::TcpConnection::detach() noexcept
 {
     if (!registered_)
         return;
+
     try {
         loop_.remove_channel(&channel_);
     } catch (const std::system_error &error) {
@@ -95,6 +107,7 @@ void snet::TcpConnection::detach() noexcept
     } catch (...) {
         del_failure(socket_.get_fd(), errno);
     }
+
     registered_ = false;
     applied_events_ = 0;
 }
@@ -103,15 +116,20 @@ void snet::TcpConnection::sync_interest()
 {
     if (state_ != State::active)
         return;
+
     std::uint32_t desired = can_read() ? static_cast<unsigned>(EPOLLIN | EPOLLRDHUP) : 0u;
+
     if (write_blocked_ && !output_.empty())
         desired |= EPOLLOUT;
+
     if (!desired) {
         detach();
         return;
     }
+
     if (registered_ && desired == applied_events_)
         return;
+
     channel_.set_events(desired);
     loop_.update_channel(&channel_);
     registered_ = true;
@@ -122,6 +140,7 @@ void snet::TcpConnection::close_impl(bool notify) noexcept
 {
     if (state_ == State::closed)
         return;
+
     state_ = State::closed;
     detach();
     socket_.close();
@@ -130,10 +149,13 @@ void snet::TcpConnection::close_impl(bool notify) noexcept
     eof_pending_ = false;
     write_blocked_ = false;
     work_.cancel();
+
     if (notify) {
         closed_pending_ = true;
+
         if (owner_closed_)
             owner_closed_(owner_context_, *this);
+
         work_.schedule();
         loop_.request_cleanup();
     }
@@ -144,11 +166,14 @@ void snet::TcpConnection::close() { close_impl(true); }
 void snet::TcpConnection::run_work()
 {
     FlagGuard guard(servicing_);
+
     try {
         if (state_ == State::active && !write_blocked_)
             drain_output();
+
         maybe_auto_close();
         sync_interest();
+
         if (closed_pending_) {
             work_.cancel();
             closed_pending_ = false;
@@ -158,7 +183,9 @@ void snet::TcpConnection::run_work()
             output_pending_ = false;
             invoke(output_callback_);
         }
+
         sync_interest();
+
         if (closed_pending_ ||
             (state_ == State::active &&
              (output_pending_ || (!write_blocked_ && (!output_.empty() || (finish_requested_ && !write_shutdown_))))))
@@ -176,10 +203,12 @@ bool snet::TcpConnection::ready_for_cleanup() const noexcept
 {
     return state_ == State::closed && !servicing_ && !callback_active_ && !work_.pending() && !work_.executing();
 }
+
 void snet::TcpConnection::cancel_closed_work() noexcept
 {
     if (state_ != State::closed)
         return;
+
     work_.cancel();
     closed_pending_ = false;
 }
@@ -188,19 +217,26 @@ snet::SendResult snet::TcpConnection::send(std::span<const char> data)
 {
     if (state_ == State::created)
         throw std::logic_error("Sending requires activation");
+
     if (state_ == State::closed)
         return {0, SendStatus::closed, {}};
+
     if (state_ == State::failing)
         return {0, SendStatus::io_error, terminal_error_};
+
     if (finish_requested_)
         return {0, SendStatus::sending_finished, {}};
+
     if (data.empty())
         return {0, SendStatus::accepted, {}};
+
     const auto accepted = std::min(data.size(), options_.output_limit - output_.readable_size());
+
     if (accepted != 0) {
         output_.append(data.first(accepted));
         work_.schedule();
     }
+
     return {accepted, accepted == data.size() ? SendStatus::accepted : SendStatus::would_block, {}};
 }
 
@@ -208,120 +244,161 @@ void snet::TcpConnection::finish_sending()
 {
     if (state_ == State::created)
         throw std::logic_error("Finishing requires activation");
+
     if (state_ != State::active || finish_requested_)
         return;
+
     finish_requested_ = true;
     work_.schedule();
 }
 
 std::span<const char> snet::TcpConnection::input_data() const noexcept { return input_.data(); }
+
 void snet::TcpConnection::consume_input(std::size_t count)
 {
     input_.consume(count);
+
     if (count != 0)
         sync_interest();
 }
+
 void snet::TcpConnection::pause_reading()
 {
     read_paused_ = true;
     sync_interest();
 }
+
 void snet::TcpConnection::resume_reading()
 {
     read_paused_ = false;
     sync_interest();
 }
+
 void snet::TcpConnection::on_data(Callback callback) { replace(data_callback_, std::move(callback)); }
+
 void snet::TcpConnection::on_eof(Callback callback) { replace(eof_callback_, std::move(callback)); }
+
 void snet::TcpConnection::on_output_available(Callback callback) { replace(output_callback_, std::move(callback)); }
+
 void snet::TcpConnection::on_closed(CloseCallback callback) { replace(closed_callback_, std::move(callback)); }
+
 void snet::TcpConnection::handle_read(int pending_error)
 {
     if (state_ != State::active)
         return;
+
     FlagGuard guard(servicing_);
     bool added = false;
+
     try {
         refresh_budgets();
+
         while (can_read() && read_calls_ < options_.read_call_budget && read_bytes_ < options_.read_byte_budget) {
             const auto size =
                 std::min(options_.input_limit - input_.readable_size(), options_.read_byte_budget - read_bytes_);
+
             auto tail = input_.prepare_write(size);
+
             ++read_calls_;
             const auto n = ::recv(socket_.get_fd(), tail.data(), size, 0);
+
             if (n > 0) {
                 const auto received = static_cast<std::size_t>(n);
+
                 input_.commit_write(received);
                 read_bytes_ += received;
                 added = true;
                 continue;
             }
+
             if (n == 0) {
                 read_eof_ = true;
                 eof_pending_ = true;
                 break;
             }
+
             const int error = errno;
+
             if (error == EINTR)
                 continue;
+
             if (error == EAGAIN || error == EWOULDBLOCK)
                 break;
+
             mark_socket_error(error);
             break;
         }
+
         if (pending_error && state_ == State::active)
             mark_socket_error(pending_error);
+
         if (added)
             invoke(data_callback_);
+
         if (state_ == State::failing)
             close_impl(true);
+
         if (state_ == State::active && eof_pending_) {
             eof_pending_ = false;
             eof_delivered_ = true;
             invoke(eof_callback_);
         }
+
         maybe_auto_close();
         sync_interest();
     } catch (...) {
         if (pending_error && state_ == State::active)
             mark_socket_error(pending_error);
+
         if (state_ == State::failing)
             close_impl(true);
+
         eof_pending_ = false;
         maybe_auto_close();
+
         if (state_ == State::closed)
             cancel_closed_work();
         else
             work_.schedule();
+
         throw;
     }
 }
+
 void snet::TcpConnection::handle_write()
 {
     if (state_ != State::active)
         return;
+
     FlagGuard guard(servicing_);
+
     write_blocked_ = false;
     drain_output();
     maybe_auto_close();
     sync_interest();
 }
+
 void snet::TcpConnection::handle_error()
 {
     if (state_ != State::active)
         return;
+
     int error = 0;
     socklen_t size = sizeof(error);
+
     if (::getsockopt(socket_.get_fd(), SOL_SOCKET, SO_ERROR, &error, &size) == -1)
         throw std::system_error(errno, std::system_category(), "getsockopt SO_ERROR");
+
     if (error != 0) {
         // SO_ERROR is consumed by getsockopt; retain it before final recv attempts.
         if (!terminal_error_)
             terminal_error_ = std::error_code(error, std::system_category());
+
         if (can_read())
             handle_read(error); // Owns the service guard and respects existing read quotas.
         else {
             FlagGuard guard(servicing_);
+
             fail_socket(error);
         }
     }
@@ -330,8 +407,10 @@ void snet::TcpConnection::handle_error()
 void snet::TcpConnection::refresh_budgets() noexcept
 {
     const auto iteration = loop_.iteration_id();
+
     if (iteration == budget_iteration_)
         return;
+
     budget_iteration_ = iteration;
     read_bytes_ = read_calls_ = write_bytes_ = write_calls_ = 0;
 }
@@ -340,6 +419,7 @@ void snet::TcpConnection::mark_socket_error(int error) noexcept
 {
     if (!terminal_error_)
         terminal_error_ = std::error_code(error, std::system_category());
+
     state_ = State::failing;
 }
 
@@ -365,46 +445,63 @@ void snet::TcpConnection::drain_output()
 {
     if (state_ != State::active)
         return;
+
     refresh_budgets();
+
     while (!output_.empty() && write_calls_ < options_.write_call_budget && write_bytes_ < options_.write_byte_budget) {
         const auto queued = output_.readable_size();
         const auto size = std::min(queued, options_.write_byte_budget - write_bytes_);
+
         ++write_calls_;
         const auto n = ::send(socket_.get_fd(), output_.data().data(), size, MSG_NOSIGNAL);
+
         if (n > 0) {
             const auto written = static_cast<std::size_t>(n);
+
             write_bytes_ += written;
             output_.consume(written);
+
             if (queued > options_.output_low_watermark && output_.readable_size() <= options_.output_low_watermark) {
                 output_pending_ = true;
                 work_.schedule();
             }
+
             continue;
         }
+
         const int error = n == 0 ? EIO : errno;
+
         if (error == EINTR)
             continue;
+
         if (error == EAGAIN || error == EWOULDBLOCK) {
             write_blocked_ = true;
             break;
         }
+
         fail_socket(error);
         return;
     }
+
     if (output_.empty() && finish_requested_ && !write_shutdown_) {
         while (write_calls_ < options_.write_call_budget) {
             ++write_calls_;
+
             if (::shutdown(socket_.get_fd(), SHUT_WR) == 0) {
                 write_shutdown_ = true;
                 break;
             }
+
             const int error = errno;
+
             if (error == EINTR)
                 continue;
+
             fail_socket(error);
             return;
         }
     }
+
     if (!write_blocked_ && (!output_.empty() || (finish_requested_ && !write_shutdown_)))
         work_.schedule();
 }

@@ -47,6 +47,7 @@ void snet::Channel::set_read_callback(std::function<void()> callback)
 {
     if (active_callback_ == &read_callback_)
         throw std::logic_error("Cannot replace the executing read callback");
+
     read_callback_ = std::move(callback);
 }
 
@@ -54,6 +55,7 @@ void snet::Channel::set_write_callback(std::function<void()> callback)
 {
     if (active_callback_ == &write_callback_)
         throw std::logic_error("Cannot replace the executing write callback");
+
     write_callback_ = std::move(callback);
 }
 
@@ -61,6 +63,7 @@ void snet::Channel::set_error_callback(std::function<void()> callback)
 {
     if (active_callback_ == &error_callback_)
         throw std::logic_error("Cannot replace the executing error callback");
+
     error_callback_ = std::move(callback);
 }
 
@@ -70,23 +73,27 @@ void snet::Channel::handle_event()
         throw std::logic_error("Channel::handle_event() is already running");
 
     ScopedValue dispatch_guard(dispatching_, true);
+
     dispatch_cancelled_ = false;
     const uint32_t events = revents_;
 
     if (events & EPOLLERR) {
         handle_error();
+
         if (dispatch_cancelled_)
             return;
     }
 
     if (events & (EPOLLIN | EPOLLRDHUP | EPOLLHUP)) {
         handle_read();
+
         if (dispatch_cancelled_)
             return;
     }
 
     if (events & EPOLLOUT) {
         handle_write();
+
         if (dispatch_cancelled_)
             return;
     }
@@ -106,6 +113,7 @@ void snet::Channel::invoke_callback(std::function<void()> &callback)
 {
     if (callback) {
         ScopedValue callback_guard(active_callback_, &callback);
+
         callback();
     }
 }

@@ -126,6 +126,7 @@ public:
      * @return The stored batch capacity (1024 by default).
      */
     int get_max_events() const noexcept;
+
     /**
      * @brief Returns the wait timeout.
      * @return The stored value in milliseconds (initially -1).

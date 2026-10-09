@@ -50,6 +50,7 @@ public:
 private:
     friend class snet::EventLoop;
     EventLoop &loop_;
+
     std::function<void()> action_;
     LoopWork *prev_ = nullptr;
     LoopWork *next_ = nullptr;

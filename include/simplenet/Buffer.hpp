@@ -28,6 +28,7 @@ public:
     /// @brief Replaces this value with an independent copy; allocation may throw.
     /// @return This buffer.
     Buffer &operator=(const Buffer &) = default;
+
     /**
      * @brief Transfers storage and positions, leaving the source logically empty.
      * @param other The source buffer.
@@ -39,6 +40,7 @@ public:
      * @return This buffer.
      */
     Buffer &operator=(Buffer &&other) noexcept;
+
     /**
      * @brief Provides read-only borrowed access to the unread sequence.
      * @return A contiguous span of readable_size() bytes; the empty pointer value is unspecified.
@@ -53,6 +55,7 @@ public:
     /// @brief Reports whether the useful sequence is empty.
     /// @return True when readable_size() is zero.
     bool empty() const noexcept;
+
     /**
      * @brief Copies all source bytes into the queue; an empty source has no effect.
      * @param bytes A valid readable span, external or a subrange of this buffer's current data().
@@ -78,6 +81,7 @@ public:
      * @note May compact or grow storage. Memory is prepared before any external I/O.
      */
     std::span<char> prepare_write(std::size_t count);
+
     /**
      * @brief Marks written tail bytes as useful, without allocating memory.
      * @param count The actual written byte count; zero has no effect.

@@ -32,12 +32,14 @@ void snet::EventLoop::loop()
             if (pending_batch_ == nullptr) {
                 pending_batch_ = &poller_.poll_with_timeout(
                     (ready_->head || phase_->head || cleanup_requested_) ? 0 : poller_.get_timeout());
+
                 next_channel_ = 0;
             }
 
             while (next_channel_ < pending_batch_->size()) {
                 // Advance before dispatch so a throwing channel is not retried.
                 auto *channel = (*pending_batch_)[next_channel_++];
+
                 if (channel != nullptr)
                     channel->handle_event();
             }
@@ -65,6 +67,7 @@ void snet::EventLoop::set_work_budget(std::size_t count)
 {
     if (count == 0)
         throw std::invalid_argument("Work budget must be positive");
+
     work_budget_ = count;
 }
 
@@ -72,14 +75,17 @@ void snet::EventLoop::schedule_work(detail::LoopWork &work) noexcept
 {
     if (work.pending_)
         return;
+
     work.pending_ = true;
     work.queue_ = ready_;
     work.prev_ = ready_->tail;
     work.next_ = nullptr;
+
     if (ready_->tail)
         ready_->tail->next_ = &work;
     else
         ready_->head = &work;
+
     ready_->tail = &work;
 }
 
@@ -87,15 +93,19 @@ void snet::EventLoop::cancel_work(detail::LoopWork &work) noexcept
 {
     if (!work.pending_)
         return;
+
     auto &queue = *work.queue_;
+
     if (work.prev_)
         work.prev_->next_ = work.next_;
     else
         queue.head = work.next_;
+
     if (work.next_)
         work.next_->prev_ = work.prev_;
     else
         queue.tail = work.prev_;
+
     work.prev_ = work.next_ = nullptr;
     work.queue_ = nullptr;
     work.pending_ = false;
@@ -105,17 +115,22 @@ void snet::EventLoop::run_work()
 {
     if (!phase_->head)
         std::swap(ready_, phase_);
+
     const auto budget = work_budget_;
+
     for (std::size_t count = 0; count < budget && phase_->head; ++count) {
         auto *work = phase_->head;
+
         cancel_work(*work);
         work->executing_ = true;
+
         try {
             work->action_();
         } catch (...) {
             work->executing_ = false;
             throw;
         }
+
         work->executing_ = false;
     }
 }
@@ -136,7 +151,9 @@ void snet::EventLoop::run_cleanup(detail::CleanupReason reason) noexcept
     assert(!cleaning_);
     cleanup_requested_ = false;
     cleaning_ = true;
+
     for (auto *registration = cleanup_head_; registration; registration = registration->next_)
         registration->action_(registration->context_, reason);
+
     cleaning_ = false;
 }

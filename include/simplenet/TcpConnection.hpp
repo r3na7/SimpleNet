@@ -41,6 +41,7 @@ struct SendResult {
     SendStatus status;          ///< Acceptance status.
     std::error_code error;      ///< First terminal reason for io_error; otherwise empty.
 };
+
 /**
  * @brief Stable-address owner of an established socket, its Channel, and two byte queues.
  * @pre The supplied socket is connected TCP IPv4/IPv6 and non-blocking; all use is in one loop thread.
@@ -74,6 +75,7 @@ public:
     TcpConnection(TcpConnection &&) = delete;
     /// @brief Connections cannot be move-assigned.
     TcpConnection &operator=(TcpConnection &&) = delete;
+
     /** @brief Activates service after handlers and ownership have been configured.
      * @throws std::logic_error Already activated or closed.
      * @throws std::system_error Registration failed; the connection remains unactivated.
@@ -91,6 +93,7 @@ public:
     /// @brief Provides borrowed access to unconsumed incoming bytes, including after closure.
     /// @return A span valid only until input modification or object destruction.
     std::span<const char> input_data() const noexcept;
+
     /** @brief Consumes incoming bytes and reconciles read capacity without synchronous receiving.
      * @param count Prefix length; zero does nothing.
      * @throws std::out_of_range Count exceeds available bytes; state remains unchanged.
@@ -127,41 +130,51 @@ public:
 private:
     friend class TcpServer;
     static ConnectionOptions checked_options(ConnectionOptions options);
+
     enum class State { created, active, failing, closed };
     template <class Function> struct Slot {
         Function callback;
         bool executing = false;
         bool replaced = false;
     };
+
     template <class Function> void replace(Slot<Function> &slot, Function callback) noexcept
     {
         if (slot.executing)
             slot.replaced = true;
+
         slot.callback = std::move(callback);
     }
+
     template <class Function, class... Args> void invoke(Slot<Function> &slot, Args... args)
     {
         if (!slot.callback)
             return;
+
         assert(!callback_active_);
         auto callable = std::move(slot.callback);
+
         slot.executing = true;
         slot.replaced = false;
         callback_active_ = true;
         auto restore = [&]() noexcept {
             if (!slot.replaced)
                 slot.callback = std::move(callable);
+
             slot.executing = false;
             callback_active_ = false;
         };
+
         try {
             callable(*this, args...);
         } catch (...) {
             restore();
             throw;
         }
+
         restore();
     }
+
     void sync_interest();
     void detach() noexcept;
     void close_impl(bool notify) noexcept;
@@ -171,11 +184,13 @@ private:
     void run_work();
     void drain_output();
     bool can_read() const noexcept;
+
     void mark_socket_error(int error) noexcept;
     void maybe_auto_close() noexcept;
     void refresh_budgets() noexcept;
     void fail_socket(int error) noexcept;
     bool ready_for_cleanup() const noexcept;
+
     void cancel_closed_work() noexcept;
 
     EventLoop &loop_;
@@ -205,6 +220,7 @@ private:
     bool closed_pending_ = false;
     bool closed_delivered_ = false;
     std::error_code terminal_error_;
+
     Slot<Callback> data_callback_, eof_callback_, output_callback_;
     Slot<CloseCallback> closed_callback_;
     void *owner_context_ = nullptr;

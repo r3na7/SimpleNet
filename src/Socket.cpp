@@ -21,6 +21,7 @@ snet::Socket &snet::Socket::operator=(Socket &&other) noexcept
         close();
         fd_ = other.release();
     }
+
     return *this;
 }
 
@@ -31,6 +32,7 @@ bool snet::Socket::is_open() const noexcept { return fd_ >= 0; }
 void snet::Socket::close() noexcept
 {
     const int fd = release();
+
     if (fd >= 0) {
         const int saved_errno = errno;
         // Linux releases the descriptor even on EINTR; retry could close a reused fd.

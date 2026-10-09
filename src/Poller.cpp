@@ -12,6 +12,7 @@ int checked_max_events(int value)
     if (value <= 0) {
         throw std::invalid_argument("Invalid max_events");
     }
+
     return value;
 }
 
@@ -21,6 +22,7 @@ snet::Poller::Poller(int max_events)
     : max_events_(checked_max_events(max_events)), events_(static_cast<size_t>(max_events_))
 {
     epoll_fd_ = epoll_create1(EPOLL_CLOEXEC);
+
     if (epoll_fd_ == -1)
         throw std::system_error(errno, std::system_category(), "epoll_create1");
 }

@@ -44,6 +44,7 @@ public:
 private:
     friend class snet::EventLoop;
     EventLoop &loop_;
+
     void *context_;
     Action action_;
     LoopCleanup *prev_ = nullptr;
