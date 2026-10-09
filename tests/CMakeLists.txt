@@ -62,3 +62,12 @@ add_executable(simplenet_tcp_connection_allocation_tests tcp_connection_allocati
 target_link_libraries(simplenet_tcp_connection_allocation_tests PRIVATE SimpleNet GTest::gtest_main)
 target_link_options(simplenet_tcp_connection_allocation_tests PRIVATE -Wl,--wrap=recv)
 gtest_discover_tests(simplenet_tcp_connection_allocation_tests TEST_PREFIX tcpalloc. PROPERTIES TIMEOUT 10)
+
+add_executable(simplenet_acceptor_tests acceptor_tests.cpp)
+target_link_libraries(simplenet_acceptor_tests PRIVATE SimpleNet GTest::gtest_main)
+gtest_discover_tests(simplenet_acceptor_tests TEST_PREFIX accept. PROPERTIES TIMEOUT 10)
+
+add_executable(simplenet_acceptor_syscall_tests acceptor_syscall_tests.cpp)
+target_link_libraries(simplenet_acceptor_syscall_tests PRIVATE SimpleNet GTest::gtest_main)
+target_link_options(simplenet_acceptor_syscall_tests PRIVATE -Wl,--wrap=epoll_ctl)
+gtest_discover_tests(simplenet_acceptor_syscall_tests TEST_PREFIX acceptsys. PROPERTIES TIMEOUT 10)
