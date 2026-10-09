@@ -169,6 +169,9 @@ private:
     void handle_error();
     void run_work();
     void drain_output();
+    bool can_read() const noexcept;
+    void mark_socket_error(int error) noexcept;
+    void maybe_auto_close() noexcept;
     void refresh_budgets() noexcept;
     void fail_socket(int error) noexcept;
     bool ready_for_cleanup() const noexcept;
@@ -184,11 +187,16 @@ private:
     bool registered_ = false;
     std::uint32_t applied_events_ = 0;
     bool read_paused_ = false;
+    bool read_eof_ = false;
+    bool eof_pending_ = false;
+    bool eof_delivered_ = false;
     bool finish_requested_ = false;
     bool write_shutdown_ = false;
     bool write_blocked_ = false;
     bool output_pending_ = false;
     std::uint64_t budget_iteration_ = 0;
+    std::size_t read_bytes_ = 0;
+    std::size_t read_calls_ = 0;
     std::size_t write_bytes_ = 0;
     std::size_t write_calls_ = 0;
     bool servicing_ = false;
