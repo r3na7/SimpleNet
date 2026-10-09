@@ -27,6 +27,11 @@ target_include_directories(SimpleNet
 
 target_compile_features(SimpleNet PUBLIC cxx_std_20)
 
+option(SIMPLENET_BUILD_EXAMPLES "Build runnable TCP demonstrations" OFF)
+if(SIMPLENET_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
     add_subdirectory(tests)

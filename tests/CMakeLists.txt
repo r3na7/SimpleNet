@@ -89,3 +89,17 @@ add_executable(simplenet_tcp_server_allocation_tests tcp_server_allocation_tests
 target_link_libraries(simplenet_tcp_server_allocation_tests PRIVATE SimpleNet GTest::gtest_main)
 target_link_options(simplenet_tcp_server_allocation_tests PRIVATE -Wl,--wrap=accept4)
 gtest_discover_tests(simplenet_tcp_server_allocation_tests TEST_PREFIX serveralloc. PROPERTIES TIMEOUT 10)
+
+if(SIMPLENET_BUILD_EXAMPLES)
+    find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
+    add_executable(simplenet_signal_stop_tests signal_stop_tests.cpp)
+    target_include_directories(simplenet_signal_stop_tests PRIVATE ${PROJECT_SOURCE_DIR}/examples)
+    target_link_libraries(simplenet_signal_stop_tests PRIVATE SimpleNet GTest::gtest_main)
+    target_link_options(simplenet_signal_stop_tests PRIVATE -Wl,--wrap=signalfd -Wl,--wrap=epoll_ctl -Wl,--wrap=close)
+    gtest_discover_tests(simplenet_signal_stop_tests TEST_PREFIX demosignal. PROPERTIES TIMEOUT 10)
+    foreach(case help invalid_cli occupied_address echo_ipv4 echo_ipv6 signal_int signal_term signal_active startup_cleanup)
+        add_test(NAME demo.${case} COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/echo_demo_tests.py --server $<TARGET_FILE:snet_echo_server> --case ${case})
+        set_tests_properties(demo.${case} PROPERTIES TIMEOUT 45)
+    endforeach()
+endif()

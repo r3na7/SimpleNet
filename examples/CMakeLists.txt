@@ -1,0 +1,2 @@
+add_executable(snet_echo_server echo_server.cpp)
+target_link_libraries(snet_echo_server PRIVATE SimpleNet)
