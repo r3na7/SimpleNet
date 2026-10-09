@@ -5,10 +5,12 @@
 #include "Acceptor.hpp"
 #include "TcpConnection.hpp"
 #include "detail/LoopCleanup.hpp"
+#include <cassert>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <unordered_map>
+#include <utility>
 
 namespace snet
 {
@@ -66,6 +68,40 @@ public:
     void stop();
 
 private:
+    template <class Function> struct Slot {
+        Function callback;
+        bool executing = false, replaced = false;
+    };
+    template <class Function> void replace(Slot<Function> &slot, Function callback) noexcept
+    {
+        if (slot.executing)
+            slot.replaced = true;
+        slot.callback = std::move(callback);
+    }
+    template <class Function, class... Args> void invoke(Slot<Function> &slot, Args &&...args)
+    {
+        if (!slot.callback)
+            return;
+        assert(!callback_active_);
+        auto callable = std::move(slot.callback);
+        slot.executing = true;
+        slot.replaced = false;
+        callback_active_ = true;
+        auto restore = [&]() noexcept {
+            if (!slot.replaced)
+                slot.callback = std::move(callable);
+            slot.executing = false;
+            callback_active_ = false;
+        };
+        try {
+            callable(std::forward<Args>(args)...);
+        } catch (...) {
+            restore();
+            throw;
+        }
+        restore();
+    }
+    bool has_configuration() const noexcept;
     struct OwnedConnection {
         TcpServer *server;
         std::uint64_t id;
@@ -90,8 +126,8 @@ private:
     OwnedConnection *closed_ = nullptr;
     std::uint64_t next_id_ = 1;
     bool started_ = false, stopped_ = false, servicing_ = false, callback_active_ = false;
-    ConnectionCallback connection_callback_;
-    AcceptErrorCallback error_callback_;
+    Slot<ConnectionCallback> connection_callback_;
+    Slot<AcceptErrorCallback> error_callback_;
     detail::LoopCleanup cleanup_;
 };
 } // namespace snet

@@ -16,13 +16,18 @@ snet::TcpServer::~TcpServer() noexcept
     connections_.clear();
     closed_ = nullptr;
 }
-void snet::TcpServer::on_connection(ConnectionCallback callback) { connection_callback_ = std::move(callback); }
-void snet::TcpServer::on_accept_error(AcceptErrorCallback callback) { error_callback_ = std::move(callback); }
+void snet::TcpServer::on_connection(ConnectionCallback callback)
+{
+    replace(connection_callback_, std::move(callback));
+    if (started_ && !stopped_ && !has_configuration())
+        acceptor_.pause_accepting();
+}
+void snet::TcpServer::on_accept_error(AcceptErrorCallback callback) { replace(error_callback_, std::move(callback)); }
 void snet::TcpServer::start()
 {
     if (started_ || stopped_)
         throw std::logic_error("Server cannot be started twice or after stop");
-    if (!connection_callback_)
+    if (!has_configuration())
         throw std::logic_error("Server requires connection configuration");
     acceptor_.start();
     started_ = true;
@@ -31,7 +36,7 @@ void snet::TcpServer::resume_accepting()
 {
     if (stopped_)
         throw std::logic_error("Stopped listener cannot resume");
-    if (!connection_callback_)
+    if (!has_configuration())
         throw std::logic_error("Server requires connection configuration");
     acceptor_.resume_accepting();
 }
@@ -76,7 +81,7 @@ void snet::TcpServer::accept(Socket socket)
     client.owner_context_ = &entry;
     client.owner_closed_ = &TcpServer::mark_closed;
     try {
-        connection_callback_(client);
+        invoke(connection_callback_, client);
         if (client.state_ != TcpConnection::State::closed)
             client.start();
     } catch (...) {
@@ -114,4 +119,9 @@ void snet::TcpServer::cleanup(detail::CleanupReason reason) noexcept
     }
 }
 
-void snet::TcpServer::accept_error(std::error_code) {}
+bool snet::TcpServer::has_configuration() const noexcept
+{
+    return static_cast<bool>(connection_callback_.callback) ||
+           (connection_callback_.executing && !connection_callback_.replaced);
+}
+void snet::TcpServer::accept_error(std::error_code error) { invoke(error_callback_, *this, error); }

@@ -1,5 +1,6 @@
 #include "acceptor_test_utils.hpp"
 #include <gtest/gtest.h>
+#include <sys/eventfd.h>
 #include <type_traits>
 static_assert(!std::is_copy_constructible_v<snet::TcpServer>);
 static_assert(!std::is_move_constructible_v<snet::TcpServer>);
@@ -528,5 +529,289 @@ TEST(TcpServerTest, StableEntriesAcrossRehash)
     tcp_test::drive(loop, [&] {
         reply += peer_read(peers[1]);
         return reply == "x";
+    });
+}
+
+TEST(TcpServerTest, StopAcceptingKeepsExistingClientActive)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    int configured = 0;
+    server.on_connection([&](auto &connection) {
+        ++configured;
+        connection.on_data([](auto &current) {
+            current.send(tcp_test::bytes("ok"));
+            current.consume_input(current.input_data().size());
+        });
+    });
+    server.start();
+    auto peer = listener.connect();
+    tcp_test::drive(loop, [&] { return configured == 1; });
+    server.stop_accepting();
+    server.stop_accepting();
+    EXPECT_THROW(server.resume_accepting(), std::logic_error);
+    EXPECT_THROW(listener.connect(), std::system_error);
+    ASSERT_EQ(::send(peer.get_fd(), "q", 1, MSG_NOSIGNAL), 1);
+    std::string reply;
+    tcp_test::drive(loop, [&] {
+        reply += peer_read(peer);
+        return reply == "ok";
+    });
+}
+TEST(TcpServerTest, CloseConnectionsKeepsListenerAccepting)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    int configured = 0, closed = 0;
+    server.on_connection([&](auto &connection) {
+        ++configured;
+        connection.on_closed([&](auto &, std::error_code) { ++closed; });
+    });
+    server.start();
+    auto first = listener.connect();
+    tcp_test::drive(loop, [&] { return configured == 1; });
+    server.close_connections();
+    server.close_connections();
+    tcp_test::drive(loop, [&] { return closed == 1; });
+    auto second = listener.connect();
+    tcp_test::drive(loop, [&] { return configured == 2; });
+    EXPECT_EQ(closed, 1);
+}
+TEST(TcpServerTest, StopFromDataDoesNotQuitSharedLoop)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    bool stopped = false;
+    server.on_connection([&](auto &connection) {
+        connection.on_data([&](auto &) {
+            server.stop();
+            server.stop();
+            stopped = true;
+        });
+    });
+    server.start();
+    auto peer = listener.connect();
+    accept_test::once(loop);
+    snet::Socket event(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC));
+    snet::Channel channel(event.get_fd());
+    int unrelated = 0;
+    channel.set_events(EPOLLIN);
+    channel.set_read_callback([&] {
+        std::uint64_t value;
+        ::read(event.get_fd(), &value, sizeof(value));
+        ++unrelated;
+    });
+    loop.update_channel(&channel);
+    std::uint64_t one = 1;
+    ASSERT_EQ(::write(event.get_fd(), &one, sizeof(one)), sizeof(one));
+    int phases = 0;
+    snet::detail::LoopWork *self = nullptr;
+    snet::detail::LoopWork follow(loop, [&] {
+        if (++phases == 2)
+            loop.quit();
+        else
+            self->schedule();
+    });
+    self = &follow;
+    ASSERT_EQ(::send(peer.get_fd(), "q", 1, MSG_NOSIGNAL), 1);
+    follow.schedule();
+    loop.loop();
+    EXPECT_TRUE(stopped);
+    EXPECT_EQ(unrelated, 1);
+    EXPECT_EQ(phases, 2);
+    loop.remove_channel(&channel);
+}
+TEST(TcpServerTest, StopAcceptingFromConfigurationStartsCurrentClient)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    server.on_connection([&](auto &connection) {
+        server.stop_accepting();
+        connection.on_data([](auto &current) {
+            current.send(tcp_test::bytes("ok"));
+            current.consume_input(current.input_data().size());
+        });
+    });
+    server.start();
+    auto peer = listener.connect();
+    ASSERT_EQ(::send(peer.get_fd(), "q", 1, MSG_NOSIGNAL), 1);
+    std::string reply;
+    tcp_test::drive(loop, [&] {
+        reply += peer_read(peer);
+        return reply == "ok";
+    });
+    EXPECT_THROW(listener.connect(), std::system_error);
+}
+TEST(TcpServerTest, CloseAndStopFromConfigurationCloseCurrentBeforeStart)
+{
+    for (bool permanent : {false, true}) {
+        snet::EventLoop loop;
+        accept_test::Listener listener;
+        snet::TcpServer server(loop, std::move(listener.socket));
+        int closed = 0;
+        server.on_connection([&](auto &connection) {
+            connection.on_closed([&](auto &, std::error_code) { ++closed; });
+            if (permanent)
+                server.stop();
+            else
+                server.close_connections();
+        });
+        server.start();
+        auto peer = listener.connect();
+        tcp_test::drive(loop, [&] { return closed == 1; });
+        if (permanent)
+            EXPECT_THROW(listener.connect(), std::system_error);
+        else {
+            auto second = listener.connect();
+            tcp_test::drive(loop, [&] { return closed == 2; });
+        }
+    }
+}
+TEST(TcpServerTest, CloseConnectionsFromClosedCallbackIsDeferred)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    int configured = 0, closed = 0;
+    bool inside = false;
+    snet::TcpConnection *first = nullptr;
+    server.on_connection([&](auto &connection) {
+        if (++configured == 1)
+            first = &connection;
+        connection.on_closed([&](auto &, std::error_code) {
+            EXPECT_FALSE(inside);
+            inside = true;
+            ++closed;
+            server.close_connections();
+            inside = false;
+        });
+    });
+    server.start();
+    auto a = listener.connect(), b = listener.connect();
+    tcp_test::drive(loop, [&] { return configured == 2; });
+    first->close();
+    tcp_test::drive(loop, [&] { return closed == 2; });
+}
+TEST(TcpServerTest, SelfReplaceConfigurationRetainsCallable)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    int first = 0, next = 0;
+    auto token = std::make_shared<int>(0);
+    std::weak_ptr<int> weak = token;
+    server.on_connection([&, token](auto &) {
+        ++first;
+        server.on_connection([&](auto &) { ++next; });
+        EXPECT_FALSE(weak.expired());
+    });
+    token.reset();
+    server.start();
+    auto a = listener.connect(), b = listener.connect();
+    tcp_test::drive(loop, [&] { return first + next == 2; });
+    EXPECT_EQ(first, 1);
+    EXPECT_EQ(next, 1);
+    EXPECT_TRUE(weak.expired());
+}
+TEST(TcpServerTest, MutableConfigurationStatePersists)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    std::vector<int> values;
+    server.on_connection([&, count = 0](auto &) mutable { values.push_back(++count); });
+    server.start();
+    auto a = listener.connect(), b = listener.connect();
+    tcp_test::drive(loop, [&] { return values.size() == 2; });
+    EXPECT_EQ(values, (std::vector<int>{1, 2}));
+}
+TEST(TcpServerTest, ConfigurationReplacementSurvivesThrow)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    int first = 0, next = 0;
+    server.on_connection([&](auto &) {
+        ++first;
+        server.on_connection([&](auto &) { ++next; });
+        throw std::runtime_error("configuration");
+    });
+    server.start();
+    auto a = listener.connect(), b = listener.connect();
+    EXPECT_THROW(accept_test::once(loop), std::runtime_error);
+    tcp_test::drive(loop, [&] { return next == 1; });
+    EXPECT_EQ(first, 1);
+}
+TEST(TcpServerTest, ClearConfigurationPausesAndReinstallRequiresResume)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    int first = 0, next = 0;
+    server.on_connection([&](auto &) {
+        ++first;
+        server.on_connection({});
+    });
+    server.start();
+    auto a = listener.connect(), b = listener.connect();
+    EXPECT_NO_THROW(accept_test::once(loop));
+    EXPECT_EQ(first, 1);
+    EXPECT_THROW(server.resume_accepting(), std::logic_error);
+    server.on_connection([&](auto &) { ++next; });
+    accept_test::once(loop);
+    EXPECT_EQ(next, 0);
+    server.resume_accepting();
+    tcp_test::drive(loop, [&] { return next == 1; });
+}
+TEST(TcpServerTest, ResumeInsideConfigurationRecognizesCurrentCallable)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    int configured = 0;
+    server.on_connection([&](auto &) {
+        ++configured;
+        EXPECT_NO_THROW(server.resume_accepting());
+    });
+    server.start();
+    auto peer = listener.connect();
+    tcp_test::drive(loop, [&] { return configured == 1; });
+}
+TEST(TcpServerTest, ReplacementDoesNotChangeExistingClientHandlers)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    snet::TcpServer server(loop, std::move(listener.socket));
+    int configured = 0;
+    server.on_connection([&](auto &connection) {
+        ++configured;
+        connection.on_data([](auto &current) {
+            current.send(tcp_test::bytes("A"));
+            current.consume_input(current.input_data().size());
+        });
+    });
+    server.start();
+    auto a = listener.connect();
+    tcp_test::drive(loop, [&] { return configured == 1; });
+    server.on_connection([&](auto &connection) {
+        ++configured;
+        connection.on_data([](auto &current) {
+            current.send(tcp_test::bytes("B"));
+            current.consume_input(current.input_data().size());
+        });
+    });
+    auto b = listener.connect();
+    tcp_test::drive(loop, [&] { return configured == 2; });
+    ASSERT_EQ(::send(a.get_fd(), "q", 1, MSG_NOSIGNAL), 1);
+    ASSERT_EQ(::send(b.get_fd(), "q", 1, MSG_NOSIGNAL), 1);
+    std::string ar, br;
+    tcp_test::drive(loop, [&] {
+        ar += peer_read(a);
+        br += peer_read(b);
+        return ar == "A" && br == "B";
     });
 }

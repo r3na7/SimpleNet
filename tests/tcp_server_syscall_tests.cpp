@@ -8,7 +8,8 @@ namespace
 {
 int listener_fd = -1, adds = 0, client_adds = 0, last_accepted = -1;
 bool fail_listener_add = false, fail_client_add = false;
-int observed_epoll = -1;
+int observed_epoll = -1, accept_error = 0, accept_attempts = 0;
+bool listener_registered = false;
 void *listener_pointer = nullptr;
 std::vector<std::pair<int, void *>> clients;
 std::array<epoll_event, 3> scripted_events{};
@@ -21,6 +22,8 @@ struct Intercept {
         last_accepted = -1;
         fail_listener_add = fail_client_add = false;
         observed_epoll = -1;
+        accept_error = accept_attempts = 0;
+        listener_registered = false;
         listener_pointer = nullptr;
         scripted_count = 0;
         clients.clear();
@@ -46,12 +49,15 @@ extern "C" int __wrap_epoll_ctl(int epoll, int op, int fd, epoll_event *event)
         ++adds;
         observed_epoll = epoll;
         listener_pointer = event->data.ptr;
+        listener_registered = true;
     }
     if (listener_fd >= 0 && fd != listener_fd && op == EPOLL_CTL_ADD && result == 0) {
         ++client_adds;
         void *pointer = event->data.ptr;
         clients.emplace_back(fd, pointer);
     }
+    if (fd == listener_fd && op == EPOLL_CTL_DEL && result == 0)
+        listener_registered = false;
     return result;
 }
 TEST(TcpServerSyscallTest, StartFailureRetainsConfigurationAndListener)
@@ -87,6 +93,13 @@ TEST(TcpServerSyscallTest, StopAcceptingBeforeStartIsPermanent)
 
 extern "C" int __wrap_accept4(int fd, sockaddr *address, socklen_t *size, int flags)
 {
+    if (fd == listener_fd) {
+        ++accept_attempts;
+        if (accept_error) {
+            errno = std::exchange(accept_error, 0);
+            return -1;
+        }
+    }
     int accepted = __real_accept4(fd, address, size, flags);
     if (fd == listener_fd && accepted >= 0)
         last_accepted = accepted;
@@ -258,4 +271,154 @@ TEST(TcpServerSyscallTest, SavedBatchRestartSkipsClosedOtherClient)
     EXPECT_TRUE(weak.expired());
     accept_test::once(loop);
     EXPECT_EQ(other_calls, 0);
+}
+
+class ServerResourceTest : public testing::TestWithParam<int>
+{
+};
+TEST_P(ServerResourceTest, ForwardsReasonAfterPauseAndKeepsLiveClient)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    Intercept guard(listener.socket.get_fd());
+    snet::TcpServer server(loop, std::move(listener.socket));
+    int configured = 0, errors = 0;
+    server.on_connection([&](auto &connection) {
+        ++configured;
+        connection.on_data([](auto &current) {
+            current.send(tcp_test::bytes("ok"));
+            current.consume_input(current.input_data().size());
+        });
+    });
+    server.on_accept_error([&](auto &, std::error_code reason) {
+        EXPECT_EQ(reason.value(), GetParam());
+        EXPECT_FALSE(listener_registered);
+        ++errors;
+    });
+    server.start();
+    auto first = listener.connect();
+    tcp_test::drive(loop, [&] { return configured == 1; });
+    auto second = listener.connect();
+    accept_error = GetParam();
+    EXPECT_NO_THROW(accept_test::once(loop));
+    EXPECT_EQ(errors, 1);
+    EXPECT_EQ(configured, 1);
+    int attempts = accept_attempts;
+    accept_test::once(loop);
+    EXPECT_EQ(accept_attempts, attempts);
+    ASSERT_EQ(::send(first.get_fd(), "q", 1, MSG_NOSIGNAL), 1);
+    std::string reply;
+    tcp_test::drive(loop, [&] {
+        char data[8];
+        auto n = ::recv(first.get_fd(), data, sizeof(data), MSG_DONTWAIT);
+        if (n > 0)
+            reply.append(data, static_cast<std::size_t>(n));
+        return reply == "ok";
+    });
+    server.resume_accepting();
+    tcp_test::drive(loop, [&] { return configured == 2; });
+}
+INSTANTIATE_TEST_SUITE_P(Limits, ServerResourceTest, testing::Values(EMFILE, ENFILE, ENOMEM, ENOBUFS));
+TEST(TcpServerSyscallTest, ResourceCallbackResumesOnlyNextDispatch)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    Intercept guard(listener.socket.get_fd());
+    snet::TcpServer server(loop, std::move(listener.socket));
+    int configured = 0, errors = 0;
+    server.on_connection([&](auto &) { ++configured; });
+    server.on_accept_error([&](auto &current, std::error_code) {
+        ++errors;
+        EXPECT_FALSE(listener_registered);
+        current.resume_accepting();
+    });
+    server.start();
+    auto peer = listener.connect();
+    accept_error = EMFILE;
+    accept_test::once(loop);
+    EXPECT_EQ(accept_attempts, 1);
+    EXPECT_EQ(configured, 0);
+    EXPECT_EQ(errors, 1);
+    tcp_test::drive(loop, [&] { return configured == 1; });
+}
+TEST(TcpServerSyscallTest, EmptyResourceHandlerKeepsPause)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    Intercept guard(listener.socket.get_fd());
+    snet::TcpServer server(loop, std::move(listener.socket));
+    server.on_connection([](auto &) {});
+    server.start();
+    auto peer = listener.connect();
+    accept_error = EMFILE;
+    accept_test::once(loop);
+    EXPECT_FALSE(listener_registered);
+    int attempts = accept_attempts;
+    accept_test::once(loop);
+    EXPECT_EQ(accept_attempts, attempts);
+}
+TEST(TcpServerSyscallTest, ResourceReplacementAndClearSurviveThrow)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    Intercept guard(listener.socket.get_fd());
+    snet::TcpServer server(loop, std::move(listener.socket));
+    int first = 0, next = 0;
+    auto token = std::make_shared<int>(0);
+    std::weak_ptr<int> weak = token;
+    server.on_connection([](auto &) {});
+    server.on_accept_error([&, token](auto &current, std::error_code) {
+        ++first;
+        current.on_accept_error([&](auto &self, std::error_code) {
+            ++next;
+            self.on_accept_error({});
+        });
+        EXPECT_FALSE(weak.expired());
+        throw std::runtime_error("resource");
+    });
+    token.reset();
+    server.start();
+    auto peer = listener.connect();
+    accept_error = EMFILE;
+    EXPECT_THROW(accept_test::once(loop), std::runtime_error);
+    EXPECT_TRUE(weak.expired());
+    EXPECT_FALSE(listener_registered);
+    accept_test::once(loop);
+    EXPECT_EQ(first, 1);
+    server.resume_accepting();
+    accept_error = ENFILE;
+    accept_test::once(loop);
+    EXPECT_EQ(next, 1);
+    server.resume_accepting();
+    accept_error = ENOMEM;
+    accept_test::once(loop);
+    EXPECT_EQ(next, 1);
+}
+TEST(TcpServerSyscallTest, ResourceCallbackClearConfigurationRequiresNewHandler)
+{
+    snet::EventLoop loop;
+    accept_test::Listener listener;
+    Intercept guard(listener.socket.get_fd());
+    snet::TcpServer server(loop, std::move(listener.socket));
+    int configured = 0;
+    bool notified = false;
+    server.on_connection([&](auto &) { ++configured; });
+    server.on_accept_error([&](auto &current, std::error_code) {
+        notified = true;
+        current.on_connection({});
+        EXPECT_THROW(current.resume_accepting(), std::logic_error);
+    });
+    server.start();
+    auto peer = listener.connect();
+    accept_error = EMFILE;
+    EXPECT_NO_THROW(accept_test::once(loop));
+    EXPECT_TRUE(notified);
+    EXPECT_EQ(configured, 0);
+    server.on_connection([&](auto &) { ++configured; });
+    accept_test::once(loop);
+    EXPECT_EQ(configured, 0);
+    server.resume_accepting();
+    tcp_test::drive(loop, [&] { return configured == 1; });
+    server.stop_accepting();
+    EXPECT_THROW(server.resume_accepting(), std::logic_error);
 }
