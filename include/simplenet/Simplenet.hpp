@@ -18,3 +18,5 @@
 #include "Poller.hpp"
 
 #include "Socket.hpp"
+
+#include "TcpConnection.hpp"
