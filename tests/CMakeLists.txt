@@ -97,6 +97,12 @@ if(SIMPLENET_BUILD_EXAMPLES)
     target_link_libraries(simplenet_signal_stop_tests PRIVATE SimpleNet GTest::gtest_main)
     target_link_options(simplenet_signal_stop_tests PRIVATE -Wl,--wrap=signalfd -Wl,--wrap=epoll_ctl -Wl,--wrap=close)
     gtest_discover_tests(simplenet_signal_stop_tests TEST_PREFIX demosignal. PROPERTIES TIMEOUT 10)
+    foreach(case client_stream client_help client_invalid_cli slow_ipv4 slow_ipv6 client_corrupt client_early_eof client_stall client_connect_failure)
+        add_test(NAME demo.${case} COMMAND ${Python3_EXECUTABLE} -B
+            ${CMAKE_CURRENT_SOURCE_DIR}/echo_demo_tests.py --server $<TARGET_FILE:snet_echo_server>
+            --client ${PROJECT_SOURCE_DIR}/examples/slow_echo_client.py --case ${case})
+        set_tests_properties(demo.${case} PROPERTIES TIMEOUT 45)
+    endforeach()
     foreach(case help invalid_cli occupied_address echo_ipv4 echo_ipv6 signal_int signal_term signal_active startup_cleanup)
         add_test(NAME demo.${case} COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/echo_demo_tests.py --server $<TARGET_FILE:snet_echo_server> --case ${case})
