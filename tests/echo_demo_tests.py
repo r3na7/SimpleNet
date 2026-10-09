@@ -15,16 +15,74 @@ import threading
 import time
 
 
+_cancel_deferred = 0
+_cancel_pending = None
+_cancel_unwinding = False
+
+
+def cancel_harness(signum, frame):
+    global _cancel_pending, _cancel_unwinding
+    if _cancel_deferred or _cancel_unwinding:
+        _cancel_pending = signum
+    else:
+        _cancel_unwinding = True
+        raise SystemExit(128 + signum)
+
+
+@contextlib.contextmanager
+def defer_cancellation():
+    """Don't raise between acquiring a child and installing its cleanup, or while reaping."""
+    global _cancel_deferred, _cancel_pending, _cancel_unwinding
+    _cancel_deferred += 1
+    try:
+        yield
+    finally:
+        _cancel_deferred -= 1
+        if not _cancel_deferred and _cancel_pending is not None:
+            selected = _cancel_pending
+            _cancel_pending = None
+            if not _cancel_unwinding:
+                _cancel_unwinding = True
+                raise SystemExit(128 + selected)
+
+
+@contextlib.contextmanager
+def owned_child(command, **kwargs):
+    process = None
+    try:
+        with defer_cancellation():
+            process = subprocess.Popen(command, **kwargs)
+        yield process
+    finally:
+        with defer_cancellation():
+            if process is not None:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                process.wait(timeout=5)
+                for stream in (process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
+
+
+def run_program(command, timeout):
+    with owned_child(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+        output, errors = process.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(command, process.returncode, output, errors)
+
+
 def run_server(server, *args):
-    return subprocess.run([server, *args], capture_output=True, text=True, timeout=5)
+    return run_program([server, *args], timeout=5)
 
 
 @contextlib.contextmanager
 def running_server(server, host):
     with tempfile.TemporaryFile() as errors:
-        process = subprocess.Popen([server, '--host', host, '--port', '0'],
-                                   stdout=subprocess.PIPE, stderr=errors)
-        try:
+        with owned_child([server, '--host', host, '--port', '0'],
+                         stdout=subprocess.PIPE, stderr=errors) as process:
             data = b''
             deadline = time.monotonic() + 5
             while b'\n' not in data:
@@ -39,19 +97,10 @@ def running_server(server, host):
             port = int(fields[2])
             assert 0 < port <= 65535
             yield process, port
-        finally:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-            process.wait(timeout=5)
-            process.stdout.close()
-            errors.seek(0)
-            diagnostic = errors.read().decode(errors='replace')
-            assert process.returncode == 0, (process.returncode, diagnostic)
-            assert 'Sanitizer' not in diagnostic, diagnostic
+        errors.seek(0)
+        diagnostic = errors.read().decode(errors='replace')
+        assert process.returncode == 0, (process.returncode, diagnostic)
+        assert 'Sanitizer' not in diagnostic, diagnostic
 
 
 def peer(host, port):
@@ -138,8 +187,7 @@ def signal_case(args, selected, active=False):
 
 
 def run_client(args, *flags):
-    return subprocess.run([sys.executable, '-B', args.client, *flags], capture_output=True,
-                          text=True, timeout=20)
+    return run_program([sys.executable, '-B', args.client, *flags], timeout=20)
 
 
 def case_client_help(args):
@@ -263,6 +311,8 @@ CASES = {
 }
 
 if __name__ == '__main__':
+    signal.signal(signal.SIGINT, cancel_harness)
+    signal.signal(signal.SIGTERM, cancel_harness)
     parser = argparse.ArgumentParser()
     parser.add_argument('--server', required=True)
     parser.add_argument('--client')

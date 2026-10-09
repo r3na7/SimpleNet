@@ -97,6 +97,17 @@ if(SIMPLENET_BUILD_EXAMPLES)
     target_link_libraries(simplenet_signal_stop_tests PRIVATE SimpleNet GTest::gtest_main)
     target_link_options(simplenet_signal_stop_tests PRIVATE -Wl,--wrap=signalfd -Wl,--wrap=epoll_ctl -Wl,--wrap=close)
     gtest_discover_tests(simplenet_signal_stop_tests TEST_PREFIX demosignal. PROPERTIES TIMEOUT 10)
+    foreach(stop_signal INT TERM)
+        string(TOLOWER ${stop_signal} signal_suffix)
+        add_test(NAME demo.harness_cancel_${signal_suffix} COMMAND ${Python3_EXECUTABLE} -B
+            ${CMAKE_CURRENT_SOURCE_DIR}/echo_harness_cancel_tests.py
+            --server $<TARGET_FILE:snet_echo_server> --client ${PROJECT_SOURCE_DIR}/examples/slow_echo_client.py
+            --harness ${CMAKE_CURRENT_SOURCE_DIR}/echo_demo_tests.py --signal ${stop_signal})
+        set_tests_properties(demo.harness_cancel_${signal_suffix} PROPERTIES TIMEOUT 45)
+    endforeach()
+    add_test(NAME demo.client_setup_deadline COMMAND ${Python3_EXECUTABLE} -B
+        ${CMAKE_CURRENT_SOURCE_DIR}/client_setup_deadline_tests.py)
+    set_tests_properties(demo.client_setup_deadline PROPERTIES TIMEOUT 45)
     foreach(case client_stream client_help client_invalid_cli slow_ipv4 slow_ipv6 client_corrupt client_early_eof client_stall client_connect_failure)
         add_test(NAME demo.${case} COMMAND ${Python3_EXECUTABLE} -B
             ${CMAKE_CURRENT_SOURCE_DIR}/echo_demo_tests.py --server $<TARGET_FILE:snet_echo_server>

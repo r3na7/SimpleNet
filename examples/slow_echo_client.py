@@ -52,6 +52,8 @@ def run_clients(host, port, clients):
     with selectors.DefaultSelector() as selector:
         try:
             for index in range(clients):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('Overall client deadline (15s) exceeded during setup')
                 sock = socket.socket(family, socket.SOCK_STREAM)
                 state = Peer(sock, b'', False, started + 0.250)
                 peers.append(state) # Close even if preparation/connect fails.

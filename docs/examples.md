@@ -26,7 +26,9 @@ For IPv6, use `--host ::1` on both commands. The IPv6 listener is IPv6-only. Hos
 be numeric addresses, without DNS names or IPv6 zone IDs. Both programs offer `--help`.
 Server port zero is useful for tests: its READY line reports the assigned port.
 
-Use Ctrl+C or SIGTERM to stop the server. Signal stop returns zero, argument errors
+Use Ctrl+C or SIGTERM to stop the server. A single loop-dispatched stop signal returns zero; overlapping signals during mask
+restoration or fatal setup follow the restored process dispositions and may terminate
+by signal. Argument errors
 return two, and infrastructure failures return one. The client returns zero only on
 complete verification, two on argument errors and one on verification/network failures.
 
@@ -94,7 +96,9 @@ after two closed clients; this executable continues accepting until a stop signa
 With examples and testing enabled, CTest runs real subprocess scenarios for IPv4/IPv6,
 slow simultaneous clients, later clients, signals, malformed arguments and occupied
 addresses. Client failure cases use local controlled peers for corruption, early EOF
-and timeout. Harnesses use deadlines and always wait for their child processes.
+and timeout. Harnesses use deadlines and wait for their child processes. SIGINT/SIGTERM cancellation
+unwinds subprocess owners and retains a non-success exit status. SIGKILL cannot run
+cleanup: the supervising runner must then terminate/reap descendants.
 
 Direct signal-owner tests exercise mask restoration and DEL-before-close ordering,
 including failed signalfd creation and failed Channel registration. Existing library

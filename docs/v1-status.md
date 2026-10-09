@@ -26,8 +26,9 @@ without another send; closed candidates are independently removed. A deliberate
 cancellation mutation makes the regression fail.
 
 The baseline had 270 tests. The demonstration adds 7 signal-owner cases and
-18 executable/client cases: **295 ordinary tests**, including 31 allocation-shim cases.
-Clean Debug and Release suites both pass. GoogleTest 1.17.0 remains the pinned default;
+21 executable/client cases: **298 ordinary tests**, including 31 allocation-shim cases.
+Debug and Release suites both pass, including cancellation and setup-deadline
+regressions added after review. GoogleTest 1.17.0 remains the pinned default;
 local checks use the explicitly supplied system source 1.14 as an offline override.
 IPv6 tests were executed, not skipped.
 
@@ -65,7 +66,7 @@ ctest --test-dir build-sanitize --output-on-failure \
 ```
 
 The 31 tests replacing allocation functions run in ordinary builds, separately from
-ASan. All remaining **264 tests pass under ASan/UBSan/LSan**, including signal/subprocess
+ASan. All remaining **267 tests pass under ASan/UBSan/LSan**, including signal/subprocess
 cases that launch the sanitized server. Doxygen generates with zero warnings.
 The final verification record is retained with the development plan.
 
@@ -79,7 +80,11 @@ Callbacks may throw, but the loop does not roll back application state.
 send accepts a copied prefix into the library queue, not a delivery acknowledgement.
 EOF ends one TCP direction. finish_sending drains output; close/stop discard output.
 The demo's signal stop is immediate and its listener/resource failure policy exits;
-applications choose their own recovery and graceful shutdown policies.
+applications choose their own recovery and graceful shutdown policies. Overlapping
+stop signals during mask restoration/fatal setup may terminate by signal instead of
+returning the ordinary stop code. Catchable harness cancellation cleans up children;
+SIGKILL requires supervising-runner cleanup. The client deadline includes per-peer
+setup checks; very large client counts remain limited by system memory/descriptors.
 
 No DNS/client-connection factory, UDP/TLS/HTTP, thread pool, multiple reactors,
 coroutines, timers, installer package or benchmark claim is included. Address can
